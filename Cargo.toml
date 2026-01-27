@@ -4,8 +4,8 @@ members = [
     "crates/format",
     "crates/bundle",
     "crates/cli",
-    # "workers/viewer",
-    # "workers/viewer/frontend",
+    "worker",
+    "frontend",
 ]
 
 [workspace.package]

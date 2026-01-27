@@ -1,0 +1,55 @@
+[package]
+name = "viewer-frontend"
+version.workspace = true
+edition.workspace = true
+description = "Leptos frontend for the NFT viewer"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Internal crates
+viewer-format = { path = "../crates/format" }
+
+# Leptos framework (CSR mode)
+leptos = { version = "0.8", features = ["csr"] }
+leptos_meta = "0.8"
+leptos_router = "0.8"
+
+# UI utilities from shared-ui
+ui-core = { git = "https://github.com/defrag-au/shared-ui", rev = "24cc859" }
+
+# WebSocket + WASM
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Location",
+    "Storage",
+    "UrlSearchParams",
+    "PointerEvent",
+    "ResizeObserver",
+    "ResizeObserverEntry",
+    "DomRectReadOnly",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+    "IntersectionObserverInit",
+] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+# HTTP client for API calls
+gloo-net = "0.6"
+
+# Timers for delayed callbacks
+gloo-timers = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+
+# URL encoding
+urlencoding = "2"
