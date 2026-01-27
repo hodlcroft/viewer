@@ -16,17 +16,17 @@ build-release:
 test:
     cargo test
 
-# Fetch and analyze a collection (dry run, no images)
-fetch policy_id:
-    cargo run --package viewer-cli -- fetch {{ policy_id }}
+# Fetch and analyze a Cardano collection (dry run, no images)
+fetch-cardano policy_id:
+    cargo run --package viewer-cli -- fetch cardano {{ policy_id }}
 
-# Sync a collection (full pipeline)
-sync policy_id:
-    cargo run --package viewer-cli -- sync {{ policy_id }}
+# Sync a Cardano collection (full pipeline)
+sync-cardano policy_id:
+    cargo run --package viewer-cli -- sync cardano {{ policy_id }}
 
-# Sync without images (metadata only)
-sync-metadata policy_id:
-    cargo run --package viewer-cli -- sync {{ policy_id }} --skip-images
+# Sync Cardano without images (metadata only)
+sync-cardano-metadata policy_id:
+    cargo run --package viewer-cli -- sync cardano {{ policy_id }} --skip-images
 
 # Show bundle info
 info path:
@@ -46,9 +46,9 @@ watch:
     cargo watch -x 'build --package viewer-cli'
 
 # Run with debug logging
-sync-debug policy_id:
-    RUST_LOG=debug cargo run --package viewer-cli -- sync {{ policy_id }}
+sync-cardano-debug policy_id:
+    RUST_LOG=debug cargo run --package viewer-cli -- sync cardano {{ policy_id }}
 
 # Run with trace logging (very verbose)
-sync-trace policy_id:
-    RUST_LOG=trace cargo run --package viewer-cli -- sync {{ policy_id }}
+sync-cardano-trace policy_id:
+    RUST_LOG=trace cargo run --package viewer-cli -- sync cardano {{ policy_id }}

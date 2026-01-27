@@ -29,16 +29,18 @@ mod bitmap;
 mod error;
 mod hcf;
 mod header;
+mod sources;
 mod strings;
 mod tokens;
 mod traits;
 
 pub use bitmap::BitmapSize;
 pub use error::BinaryFormatError;
-pub use hcf::{HcfIndexSize, HcfMetadata};
-pub use header::Header;
+pub use hcf::{HcfIndexSize, HcfMetadata, ImageFormat};
+pub use header::{FLAG_MULTI_SOURCE, HEADER_SIZE, Header};
+pub use sources::{SourceMetadata, SourcesSection};
 pub use strings::{StringRef, StringTable, StringTableBuilder};
-pub use tokens::TokenEntry;
+pub use tokens::{TOKEN_FIXED_SIZE, TOKEN_FIXED_SIZE_MULTI_SOURCE, TokenEntry, write_hcf_location};
 pub use traits::{TraitDef, TraitSchema, TraitSchemaBuilder, ValueDef};
 
 /// Magic bytes identifying a collection.bin file

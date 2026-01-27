@@ -4,7 +4,7 @@ use crate::{BitmapSize, HcfIndexSize};
 
 /// Fixed fields in a token entry (before variable-size data).
 ///
-/// Layout:
+/// Layout (single-source):
 /// - sprite_sheet: u16
 /// - sprite_x: u8
 /// - sprite_y: u8
@@ -12,11 +12,26 @@ use crate::{BitmapSize, HcfIndexSize};
 /// - rarity_score: u16 (fixed-point, score * 100)
 /// - name_ref: u16
 /// Total fixed: 10 bytes
+///
+/// Layout (multi-source, FLAG_MULTI_SOURCE set):
+/// - source_index: u8 (added at start)
+/// - sprite_sheet: u16
+/// - sprite_x: u8
+/// - sprite_y: u8
+/// - rarity_rank: u16
+/// - rarity_score: u16 (fixed-point, score * 100)
+/// - name_ref: u16
+/// Total fixed: 11 bytes
 pub const TOKEN_FIXED_SIZE: usize = 10;
+pub const TOKEN_FIXED_SIZE_MULTI_SOURCE: usize = 11;
 
 /// A single token entry in the token table.
 #[derive(Debug, Clone)]
 pub struct TokenEntry {
+    // Source index (only present if FLAG_MULTI_SOURCE, 1 byte)
+    // For single-source collections, all tokens implicitly belong to source 0
+    pub source_index: Option<u8>,
+
     // Sprite location (4 bytes)
     pub sprite_sheet: u16,
     pub sprite_x: u8,
@@ -36,29 +51,54 @@ pub struct TokenEntry {
 
 impl TokenEntry {
     /// Calculate the total entry size including variable fields.
-    pub fn entry_size(bitmap_size: BitmapSize, hcf_index_size: HcfIndexSize) -> usize {
-        TOKEN_FIXED_SIZE + bitmap_size.byte_size() + hcf_index_size.byte_size()
+    pub fn entry_size(
+        bitmap_size: BitmapSize,
+        hcf_index_size: HcfIndexSize,
+        multi_source: bool,
+    ) -> usize {
+        let fixed = if multi_source {
+            TOKEN_FIXED_SIZE_MULTI_SOURCE
+        } else {
+            TOKEN_FIXED_SIZE
+        };
+        fixed + bitmap_size.byte_size() + hcf_index_size.byte_size()
     }
 
     /// Serialize fixed fields to bytes.
-    pub fn write_fixed(&self, buf: &mut [u8]) {
-        buf[0..2].copy_from_slice(&self.sprite_sheet.to_le_bytes());
-        buf[2] = self.sprite_x;
-        buf[3] = self.sprite_y;
-        buf[4..6].copy_from_slice(&self.rarity_rank.to_le_bytes());
-        buf[6..8].copy_from_slice(&self.rarity_score.to_le_bytes());
-        buf[8..10].copy_from_slice(&self.name_ref.to_le_bytes());
+    ///
+    /// For multi-source collections, writes source_index as first byte.
+    pub fn write_fixed(&self, buf: &mut [u8], multi_source: bool) {
+        let offset = if multi_source {
+            buf[0] = self.source_index.unwrap_or(0);
+            1
+        } else {
+            0
+        };
+        buf[offset..offset + 2].copy_from_slice(&self.sprite_sheet.to_le_bytes());
+        buf[offset + 2] = self.sprite_x;
+        buf[offset + 3] = self.sprite_y;
+        buf[offset + 4..offset + 6].copy_from_slice(&self.rarity_rank.to_le_bytes());
+        buf[offset + 6..offset + 8].copy_from_slice(&self.rarity_score.to_le_bytes());
+        buf[offset + 8..offset + 10].copy_from_slice(&self.name_ref.to_le_bytes());
     }
 
     /// Read fixed fields from bytes.
-    pub fn read_fixed(buf: &[u8]) -> Self {
+    ///
+    /// For multi-source collections, reads source_index from first byte.
+    pub fn read_fixed(buf: &[u8], multi_source: bool) -> Self {
+        let (source_index, offset) = if multi_source {
+            (Some(buf[0]), 1)
+        } else {
+            (None, 0)
+        };
         Self {
-            sprite_sheet: u16::from_le_bytes([buf[0], buf[1]]),
-            sprite_x: buf[2],
-            sprite_y: buf[3],
-            rarity_rank: u16::from_le_bytes([buf[4], buf[5]]),
-            rarity_score: u16::from_le_bytes([buf[6], buf[7]]),
-            name_ref: u16::from_le_bytes([buf[8], buf[9]]),
+            source_index,
+            sprite_sheet: u16::from_le_bytes([buf[offset], buf[offset + 1]]),
+            sprite_x: buf[offset + 2],
+            sprite_y: buf[offset + 3],
+            rarity_rank: u16::from_le_bytes([buf[offset + 4], buf[offset + 5]]),
+            rarity_score: u16::from_le_bytes([buf[offset + 6], buf[offset + 7]]),
+            name_ref: u16::from_le_bytes([buf[offset + 8], buf[offset + 9]]),
         }
     }
 }
@@ -127,23 +167,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_entry_size() {
+    fn test_entry_size_single_source() {
         // U64 bitmap (8) + U32U16 HCF (6) + fixed (10) = 24
         assert_eq!(
-            TokenEntry::entry_size(BitmapSize::U64, HcfIndexSize::U32U16),
+            TokenEntry::entry_size(BitmapSize::U64, HcfIndexSize::U32U16, false),
             24
         );
 
         // U128 bitmap (16) + U32U24 HCF (7) + fixed (10) = 33
         assert_eq!(
-            TokenEntry::entry_size(BitmapSize::U128, HcfIndexSize::U32U24),
+            TokenEntry::entry_size(BitmapSize::U128, HcfIndexSize::U32U24, false),
             33
         );
     }
 
     #[test]
-    fn test_token_entry_roundtrip() {
+    fn test_entry_size_multi_source() {
+        // U64 bitmap (8) + U32U16 HCF (6) + fixed (11) = 25
+        assert_eq!(
+            TokenEntry::entry_size(BitmapSize::U64, HcfIndexSize::U32U16, true),
+            25
+        );
+
+        // U128 bitmap (16) + U32U24 HCF (7) + fixed (11) = 34
+        assert_eq!(
+            TokenEntry::entry_size(BitmapSize::U128, HcfIndexSize::U32U24, true),
+            34
+        );
+    }
+
+    #[test]
+    fn test_token_entry_roundtrip_single_source() {
         let entry = TokenEntry {
+            source_index: None,
             sprite_sheet: 5,
             sprite_x: 3,
             sprite_y: 7,
@@ -153,9 +209,35 @@ mod tests {
         };
 
         let mut buf = [0u8; TOKEN_FIXED_SIZE];
-        entry.write_fixed(&mut buf);
-        let restored = TokenEntry::read_fixed(&buf);
+        entry.write_fixed(&mut buf, false);
+        let restored = TokenEntry::read_fixed(&buf, false);
 
+        assert_eq!(restored.source_index, None);
+        assert_eq!(restored.sprite_sheet, 5);
+        assert_eq!(restored.sprite_x, 3);
+        assert_eq!(restored.sprite_y, 7);
+        assert_eq!(restored.rarity_rank, 42);
+        assert_eq!(restored.rarity_score, 1234);
+        assert_eq!(restored.name_ref, 100);
+    }
+
+    #[test]
+    fn test_token_entry_roundtrip_multi_source() {
+        let entry = TokenEntry {
+            source_index: Some(2),
+            sprite_sheet: 5,
+            sprite_x: 3,
+            sprite_y: 7,
+            rarity_rank: 42,
+            rarity_score: 1234,
+            name_ref: 100,
+        };
+
+        let mut buf = [0u8; TOKEN_FIXED_SIZE_MULTI_SOURCE];
+        entry.write_fixed(&mut buf, true);
+        let restored = TokenEntry::read_fixed(&buf, true);
+
+        assert_eq!(restored.source_index, Some(2));
         assert_eq!(restored.sprite_sheet, 5);
         assert_eq!(restored.sprite_x, 3);
         assert_eq!(restored.sprite_y, 7);

@@ -134,11 +134,13 @@ impl TraitSchema {
 }
 
 /// Builder for constructing a trait schema during ingestion.
+#[derive(Clone)]
 pub struct TraitSchemaBuilder {
     traits: Vec<TraitDefBuilder>,
     current_offset: u16,
 }
 
+#[derive(Clone)]
 struct TraitDefBuilder {
     name: StringRef,
     bitmap_offset: u16,
@@ -182,6 +184,20 @@ impl TraitSchemaBuilder {
     /// Get the total number of trait:value combinations.
     pub fn total_values(&self) -> usize {
         self.current_offset as usize
+    }
+
+    /// Get the number of traits.
+    pub fn trait_count(&self) -> usize {
+        self.traits.len()
+    }
+
+    /// Get the bitmap offset for a trait index.
+    pub fn value_offset(&self, trait_idx: usize) -> usize {
+        if trait_idx < self.traits.len() {
+            self.traits[trait_idx].bitmap_offset as usize
+        } else {
+            0
+        }
     }
 
     /// Build the final schema.

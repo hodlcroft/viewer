@@ -11,32 +11,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Fetch collection data and analyze traits (dry run)
-    Fetch {
-        /// Policy ID of the collection
-        policy_id: String,
-
-        /// Config file path (default: configs/cardano/{policy_id}.toml)
-        #[arg(short, long)]
-        config: Option<PathBuf>,
+    /// Sync a collection from a blockchain
+    Sync {
+        #[command(subcommand)]
+        chain: SyncChain,
     },
 
-    /// Sync a collection from chain by policy ID
-    Sync {
-        /// Policy ID of the collection
-        policy_id: String,
-
-        /// Output directory for the bundle
-        #[arg(short, long, default_value = "./output")]
-        output: PathBuf,
-
-        /// Config file path (default: configs/cardano/{policy_id}.toml)
-        #[arg(short, long)]
-        config: Option<PathBuf>,
-
-        /// Skip image fetching (metadata only)
-        #[arg(long)]
-        skip_images: bool,
+    /// Fetch and analyze a collection (dry run, no images)
+    Fetch {
+        #[command(subcommand)]
+        chain: FetchChain,
     },
 
     /// Verify a bundle's integrity
@@ -52,6 +36,40 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum SyncChain {
+    /// Sync a Cardano collection by policy ID
+    Cardano {
+        /// Policy ID of the collection
+        policy_id: String,
+
+        /// Output directory for the bundle
+        #[arg(short, long, default_value = "./output")]
+        output: PathBuf,
+
+        /// Config file path (default: configs/cardano/{policy_id}.toml)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Skip image fetching (metadata only)
+        #[arg(long)]
+        skip_images: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum FetchChain {
+    /// Fetch a Cardano collection by policy ID
+    Cardano {
+        /// Policy ID of the collection
+        policy_id: String,
+
+        /// Config file path (default: configs/cardano/{policy_id}.toml)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -59,13 +77,19 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Fetch { policy_id, config } => cmd_fetch(&policy_id, config).await,
-        Commands::Sync {
-            policy_id,
-            output,
-            config,
-            skip_images,
-        } => cmd_sync(&policy_id, &output, config, skip_images).await,
+        Commands::Sync { chain } => match chain {
+            SyncChain::Cardano {
+                policy_id,
+                output,
+                config,
+                skip_images,
+            } => cmd_sync_cardano(&policy_id, &output, config, skip_images).await,
+        },
+        Commands::Fetch { chain } => match chain {
+            FetchChain::Cardano { policy_id, config } => {
+                cmd_fetch_cardano(&policy_id, config).await
+            }
+        },
         Commands::Verify { path } => {
             println!("Verifying bundle at {}", path.display());
             todo!("Verify not yet implemented")
@@ -74,14 +98,14 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Fetch collection data and analyze traits without generating output files.
-async fn cmd_fetch(policy_id: &str, config_path: Option<PathBuf>) -> anyhow::Result<()> {
+/// Fetch Cardano collection data and analyze traits without generating output files.
+async fn cmd_fetch_cardano(policy_id: &str, config_path: Option<PathBuf>) -> anyhow::Result<()> {
     use viewer_ingest::{AssetSource, CnftToolsSource, TraitAnalysis};
 
-    println!("Fetching collection: {}", policy_id);
+    println!("Fetching Cardano collection: {}", policy_id);
 
     // Load config if provided
-    let config = load_config(policy_id, config_path)?;
+    let config = load_cardano_config(policy_id, config_path)?;
     let ignore_traits = config.traits.ignore.clone();
 
     // Fetch from CNFT.tools
@@ -117,10 +141,11 @@ async fn cmd_fetch(policy_id: &str, config_path: Option<PathBuf>) -> anyhow::Res
     println!("  {} assets have image URLs", with_images);
     println!("  {} are IPFS URLs", ipfs_images);
 
-    // Estimate binary format size
+    // Estimate binary format size (assuming single source)
     let token_entry_size = viewer_binary::TokenEntry::entry_size(
         analysis.bitmap_size,
-        viewer_binary::HcfIndexSize::U32U16, // Assume small images
+        viewer_binary::HcfIndexSize::U32U16,
+        false, // single source
     );
     let estimated_token_table = assets.len() * token_entry_size;
     println!("\nEstimated collection.bin:");
@@ -132,8 +157,8 @@ async fn cmd_fetch(policy_id: &str, config_path: Option<PathBuf>) -> anyhow::Res
     Ok(())
 }
 
-/// Full sync: fetch, analyze, generate sprites, HCF bundles, and collection.bin.
-async fn cmd_sync(
+/// Sync a Cardano collection: fetch, analyze, generate sprites, HCF bundles, and collection.bin.
+async fn cmd_sync_cardano(
     policy_id: &str,
     output: &PathBuf,
     config_path: Option<PathBuf>,
@@ -143,10 +168,10 @@ async fn cmd_sync(
         AssetSource, CnftToolsSource, Pipeline, PipelineConfig, TraitAnalysis, fetch_images,
     };
 
-    println!("Syncing collection: {}", policy_id);
+    println!("Syncing Cardano collection: {}", policy_id);
 
     // Load config
-    let config = load_config(policy_id, config_path)?;
+    let config = load_cardano_config(policy_id, config_path)?;
     let ignore_traits = config.traits.ignore.clone();
 
     // Fetch metadata from CNFT.tools
@@ -162,7 +187,7 @@ async fn cmd_sync(
 
     // Initialize pipeline
     let pipeline_config = PipelineConfig {
-        build_dir: std::path::PathBuf::from(".build"),
+        build_dir: PathBuf::from(".build"),
         ..Default::default()
     };
     let mut pipeline = Pipeline::new(policy_id, assets.len(), pipeline_config)?;
@@ -243,8 +268,8 @@ fn cmd_info(path: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Load ingestion config from file or create default.
-fn load_config(
+/// Load Cardano ingestion config from file or create default.
+fn load_cardano_config(
     policy_id: &str,
     config_path: Option<PathBuf>,
 ) -> anyhow::Result<viewer_format::IngestionConfig> {

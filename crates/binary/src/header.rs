@@ -1,11 +1,14 @@
 //! Binary format header.
 //!
-//! The header is always 40 bytes and contains format metadata plus offsets to all sections.
+//! The header is always 48 bytes and contains format metadata plus offsets to all sections.
 
 use crate::{BitmapSize, HcfIndexSize, MAGIC, VERSION};
 
 /// Fixed header size in bytes.
-pub const HEADER_SIZE: usize = 40;
+pub const HEADER_SIZE: usize = 48;
+
+/// Feature flag: Collection has multiple sources, tokens include source_index field.
+pub const FLAG_MULTI_SOURCE: u16 = 1 << 0;
 
 /// Header structure for collection.bin files.
 ///
@@ -27,8 +30,8 @@ pub struct Header {
     pub bitmap_size: u8,
     /// HCF index size enum
     pub hcf_index_size: u8,
-    /// Reserved for future use
-    pub _reserved: u8,
+    /// Number of sources (1 = single chain, >1 = multi-chain)
+    pub source_count: u8,
 
     // Section offsets (from start of file)
     /// Offset to string table
@@ -45,6 +48,8 @@ pub struct Header {
     pub sprites_offset: u32,
     /// Offset to HCF metadata
     pub hcf_metadata_offset: u32,
+    /// Offset to sources section
+    pub sources_offset: u32,
 }
 
 impl Header {
@@ -54,16 +59,22 @@ impl Header {
         trait_count: u8,
         bitmap_size: BitmapSize,
         hcf_index_size: HcfIndexSize,
+        source_count: u8,
     ) -> Self {
+        let flags = if source_count > 1 {
+            FLAG_MULTI_SOURCE
+        } else {
+            0
+        };
         Self {
             magic: MAGIC,
             version: VERSION,
-            flags: 0,
+            flags,
             token_count,
             trait_count,
             bitmap_size: bitmap_size as u8,
             hcf_index_size: hcf_index_size as u8,
-            _reserved: 0,
+            source_count,
             string_table_offset: 0,
             trait_schema_offset: 0,
             trait_index_offset: 0,
@@ -71,7 +82,13 @@ impl Header {
             phf_offset: 0,
             sprites_offset: 0,
             hcf_metadata_offset: 0,
+            sources_offset: 0,
         }
+    }
+
+    /// Check if this collection has multiple sources.
+    pub fn is_multi_source(&self) -> bool {
+        self.flags & FLAG_MULTI_SOURCE != 0
     }
 
     /// Get the bitmap size enum.
@@ -95,14 +112,15 @@ impl Header {
         buf[12] = self.trait_count;
         buf[13] = self.bitmap_size;
         buf[14] = self.hcf_index_size;
-        buf[15] = self._reserved;
+        buf[15] = self.source_count;
         buf[16..20].copy_from_slice(&self.string_table_offset.to_le_bytes());
         buf[20..24].copy_from_slice(&self.trait_schema_offset.to_le_bytes());
         buf[24..28].copy_from_slice(&self.trait_index_offset.to_le_bytes());
         buf[28..32].copy_from_slice(&self.token_table_offset.to_le_bytes());
         buf[32..36].copy_from_slice(&self.phf_offset.to_le_bytes());
-        buf[36..38].copy_from_slice(&(self.sprites_offset as u16).to_le_bytes());
-        buf[38..40].copy_from_slice(&(self.hcf_metadata_offset as u16).to_le_bytes());
+        buf[36..40].copy_from_slice(&self.sprites_offset.to_le_bytes());
+        buf[40..44].copy_from_slice(&self.hcf_metadata_offset.to_le_bytes());
+        buf[44..48].copy_from_slice(&self.sources_offset.to_le_bytes());
 
         buf
     }
@@ -117,14 +135,15 @@ impl Header {
             trait_count: buf[12],
             bitmap_size: buf[13],
             hcf_index_size: buf[14],
-            _reserved: buf[15],
+            source_count: buf[15],
             string_table_offset: u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]),
             trait_schema_offset: u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]),
             trait_index_offset: u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]),
             token_table_offset: u32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]),
             phf_offset: u32::from_le_bytes([buf[32], buf[33], buf[34], buf[35]]),
-            sprites_offset: u16::from_le_bytes([buf[36], buf[37]]) as u32,
-            hcf_metadata_offset: u16::from_le_bytes([buf[38], buf[39]]) as u32,
+            sprites_offset: u32::from_le_bytes([buf[36], buf[37], buf[38], buf[39]]),
+            hcf_metadata_offset: u32::from_le_bytes([buf[40], buf[41], buf[42], buf[43]]),
+            sources_offset: u32::from_le_bytes([buf[44], buf[45], buf[46], buf[47]]),
         }
     }
 }
@@ -135,7 +154,7 @@ mod tests {
 
     #[test]
     fn test_header_roundtrip() {
-        let header = Header::new(10000, 10, BitmapSize::U128, HcfIndexSize::U32U16);
+        let header = Header::new(10000, 10, BitmapSize::U128, HcfIndexSize::U32U16, 1);
         let bytes = header.to_bytes();
         let parsed = Header::from_bytes(&bytes);
 
@@ -145,12 +164,25 @@ mod tests {
         assert_eq!(parsed.trait_count, 10);
         assert_eq!(parsed.bitmap_size().unwrap(), BitmapSize::U128);
         assert_eq!(parsed.hcf_index_size().unwrap(), HcfIndexSize::U32U16);
+        assert_eq!(parsed.source_count, 1);
+        assert!(!parsed.is_multi_source());
+    }
+
+    #[test]
+    fn test_header_multi_source() {
+        let header = Header::new(5000, 8, BitmapSize::U64, HcfIndexSize::U32U16, 3);
+        let bytes = header.to_bytes();
+        let parsed = Header::from_bytes(&bytes);
+
+        assert_eq!(parsed.source_count, 3);
+        assert!(parsed.is_multi_source());
+        assert_eq!(parsed.flags & FLAG_MULTI_SOURCE, FLAG_MULTI_SOURCE);
     }
 
     #[test]
     fn test_header_size() {
-        assert_eq!(HEADER_SIZE, 40);
-        let header = Header::new(0, 0, BitmapSize::U64, HcfIndexSize::U32U16);
+        assert_eq!(HEADER_SIZE, 48);
+        let header = Header::new(0, 0, BitmapSize::U64, HcfIndexSize::U32U16, 1);
         assert_eq!(header.to_bytes().len(), HEADER_SIZE);
     }
 }

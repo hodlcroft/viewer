@@ -16,6 +16,7 @@ impl StringRef {
 }
 
 /// Builder for constructing a deduplicated string table.
+#[derive(Clone)]
 pub struct StringTableBuilder {
     /// Map from string content to offset
     offsets: HashMap<String, u16>,
