@@ -139,38 +139,69 @@ async fn cmd_sync(
     config_path: Option<PathBuf>,
     skip_images: bool,
 ) -> anyhow::Result<()> {
-    use viewer_ingest::{AssetSource, CnftToolsSource, TraitAnalysis};
+    use viewer_ingest::{
+        AssetSource, CnftToolsSource, Pipeline, PipelineConfig, TraitAnalysis, fetch_images,
+    };
 
     println!("Syncing collection: {}", policy_id);
-    println!("  Output: {}", output.display());
 
     // Load config
     let config = load_config(policy_id, config_path)?;
     let ignore_traits = config.traits.ignore.clone();
 
-    // Create output directory
-    std::fs::create_dir_all(output)?;
-
-    // Fetch from CNFT.tools
+    // Fetch metadata from CNFT.tools
+    println!("\n[1/5] Fetching collection metadata...");
     let source = CnftToolsSource::new();
     let assets = source.fetch_collection(policy_id).await?;
-    println!("  Fetched {} assets", assets.len());
+    println!("  Found {} assets", assets.len());
 
     // Analyze traits
+    println!("\n[2/5] Analyzing traits...");
     let analysis = TraitAnalysis::from_assets(&assets, &ignore_traits)?;
     println!("  {}", analysis.summary());
 
+    // Initialize pipeline
+    let pipeline_config = PipelineConfig {
+        build_dir: std::path::PathBuf::from(".build"),
+        ..Default::default()
+    };
+    let mut pipeline = Pipeline::new(policy_id, assets.len(), pipeline_config)?;
+    println!("  Build directory: {}", pipeline.dirs.root.display());
+
+    // Fetch images
     if !skip_images {
-        println!("\nFetching images...");
-        // TODO: Implement image fetching with IpfsFetcher
-        println!("  (Image fetching not yet implemented)");
+        println!("\n[3/5] Fetching images from IPFS...");
+        let progress_cb = Box::new(
+            |processed: usize, total: usize, fetched: usize, failed: usize| {
+                print!(
+                    "\r  Progress: {}/{} ({} new, {} failed)    ",
+                    processed, total, fetched, failed
+                );
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+            },
+        );
+        let result = fetch_images(&mut pipeline, &assets, Some(progress_cb)).await?;
+        println!(
+            "\r  Complete: {} fetched, {} skipped, {} failed    ",
+            result.fetched, result.skipped, result.failed
+        );
+    } else {
+        println!("\n[3/5] Skipping image fetch (--skip-images)");
     }
 
     // TODO: Generate sprites
-    // TODO: Generate HCF bundles
-    // TODO: Build and write collection.bin
+    println!("\n[4/5] Generating sprites...");
+    println!("  (Not yet implemented)");
 
-    println!("\n(Full sync not yet implemented - use 'fetch' for analysis)");
+    // TODO: Generate HCF bundles
+    println!("\n[5/5] Generating HCF bundles...");
+    println!("  (Not yet implemented)");
+
+    // Copy final output
+    println!("\nOutput: {}", output.display());
+    std::fs::create_dir_all(output)?;
+    // TODO: Copy collection.bin, sprites, HCF to output directory
 
     Ok(())
 }
