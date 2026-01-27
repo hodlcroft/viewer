@@ -1,0 +1,67 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# local test dbs
+*.db
+
+# Bot configurations (contains secrets)
+**/config.toml
+!**/config.toml.example
+**/config/secrets.toml
+!**/config/secrets.toml.example
+
+# Terraform
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+!**/*.tfvars.example
+**/.terraform/
+**/.terraform.lock.hcl
+
+# Temporary files
+*.tmp
+*.temp
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Compositor secrets
+secrets.toml
+
+# Build artifacts
+dist/
+build/
+node_modules/
+target/
+
+# wrangler
+.wrangler
+
+# image generation artifacts
+projects/*/out/**
+projects/*/assets/
+projects/*/images/**
+projects/*/catalog.json
+projects/*/index.json
+projects/*/asset_details.json
+
+
+catalog-inventory.json
+catalog-rules.txt
