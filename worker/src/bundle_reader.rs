@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use worker::{kv::KvStore, Bucket, Error, Range};
+use worker_stack::prelude::*;
+use worker_stack::worker::Range;
 
 /// Index entry for a token in the bundle
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,7 +54,7 @@ impl<'a> BundleReader<'a> {
     }
 
     /// Load the bundle index, using KV cache if available
-    async fn load_index(&self, kv: Option<&KvStore>) -> Result<BundleIndex, Error> {
+    async fn load_index(&self, kv: Option<&KvStore>) -> Result<BundleIndex> {
         let cache_key = format!("bundle-index:{}:{}", self.project, self.seed);
 
         // Try KV cache first
@@ -98,11 +99,7 @@ impl<'a> BundleReader<'a> {
 
     /// Get an image by token ID from the bundle
     /// Returns (image_bytes, image_format)
-    pub async fn get_image(
-        &self,
-        id: &str,
-        kv: Option<&KvStore>,
-    ) -> Result<(Vec<u8>, String), Error> {
+    pub async fn get_image(&self, id: &str, kv: Option<&KvStore>) -> Result<(Vec<u8>, String)> {
         // Load index
         let index = self.load_index(kv).await?;
 

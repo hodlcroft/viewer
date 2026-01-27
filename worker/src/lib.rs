@@ -1,8 +1,8 @@
 mod bundle_reader;
 
-use viewer_format::AssetDetails;
 use serde::{Deserialize, Serialize};
-use worker::*;
+use viewer_format::AssetDetails;
+use worker_stack::prelude::*;
 
 use crate::bundle_reader::BundleReader;
 
@@ -15,7 +15,8 @@ struct PreviewConfig {
 
 #[event(start)]
 fn start() {
-    console_error_panic_hook::set_once();
+    worker_utils::set_panic_hook();
+    worker_utils::init_tracing(None);
 }
 
 #[event(fetch)]

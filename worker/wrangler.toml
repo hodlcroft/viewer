@@ -1,6 +1,6 @@
 name = "preview-viewer"
 main = "build/worker/shim.mjs"
-compatibility_date = "2024-12-01"
+compatibility_date = "2025-08-31"
 routes = [
     { pattern = "preview.compositor.hodlcroft.com", custom_domain = true },
 ]
