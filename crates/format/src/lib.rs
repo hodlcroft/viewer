@@ -169,6 +169,74 @@ pub struct ValueStats {
     pub percentage: f64,
 }
 
+// ============================================================================
+// Ingestion Config
+// ============================================================================
+
+/// Per-collection configuration for ingestion.
+///
+/// Stored in `configs/{chain}/{collection_id}.toml`
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IngestionConfig {
+    /// Override display name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// Trait configuration
+    #[serde(default)]
+    pub traits: TraitConfig,
+
+    /// Rarity calculation overrides
+    #[serde(default)]
+    pub rarity: RarityConfig,
+}
+
+/// Trait processing configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraitConfig {
+    /// Traits to exclude from filtering/indexing.
+    ///
+    /// Use for high-cardinality traits like unique identifiers.
+    /// These traits are still stored in token details but not indexed.
+    #[serde(default)]
+    pub ignore: Vec<String>,
+
+    /// Trait name aliases for display normalization.
+    ///
+    /// Maps original trait names to display names.
+    #[serde(default)]
+    pub aliases: std::collections::HashMap<String, String>,
+}
+
+/// Rarity calculation configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RarityConfig {
+    /// Traits to exclude from rarity score calculation.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+impl IngestionConfig {
+    /// Check if a trait should be ignored for indexing.
+    pub fn should_ignore_trait(&self, trait_name: &str) -> bool {
+        self.traits.ignore.iter().any(|t| t == trait_name)
+    }
+
+    /// Get the display name for a trait, applying aliases.
+    pub fn display_name<'a>(&'a self, trait_name: &'a str) -> &'a str {
+        self.traits
+            .aliases
+            .get(trait_name)
+            .map(|s| s.as_str())
+            .unwrap_or(trait_name)
+    }
+
+    /// Check if a trait should be excluded from rarity calculation.
+    pub fn exclude_from_rarity(&self, trait_name: &str) -> bool {
+        self.rarity.exclude.iter().any(|t| t == trait_name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +304,22 @@ mod tests {
             value,
             AttributeValue::Multiple(vec!["Tee".to_string(), "Hoodie".to_string()])
         );
+    }
+
+    #[test]
+    fn test_ingestion_config() {
+        let mut config = IngestionConfig::default();
+        config.traits.ignore = vec!["Call Sign".to_string(), "Serial".to_string()];
+        config
+            .traits
+            .aliases
+            .insert("BG".to_string(), "Background".to_string());
+
+        assert!(config.should_ignore_trait("Call Sign"));
+        assert!(config.should_ignore_trait("Serial"));
+        assert!(!config.should_ignore_trait("Background"));
+
+        assert_eq!(config.display_name("BG"), "Background");
+        assert_eq!(config.display_name("Eyes"), "Eyes");
     }
 }

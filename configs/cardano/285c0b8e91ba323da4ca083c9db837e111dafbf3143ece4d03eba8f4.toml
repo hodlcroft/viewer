@@ -1,0 +1,19 @@
+# Toolheads Collection Config
+# Policy ID: 285c0b8e91ba323da4ca083c9db837e111dafbf3143ece4d03eba8f4
+
+# Display name (optional, defaults to on-chain name)
+# name = "Toolheads"
+
+# Traits to exclude from filtering/indexing
+# Use this for unique identifiers, serial numbers, or high-cardinality traits
+# that would bloat the index without providing useful filtering
+[traits]
+ignore = [
+    # "Call Sign",     # Example: unique per token
+    # "Serial Number", # Example: unique per token
+]
+
+# Trait aliases for cleaner display (optional)
+# [traits.aliases]
+# "BACKGROUND" = "Background"
+# "BODY_TYPE" = "Body Type"

@@ -55,5 +55,8 @@ wasm-bindgen = "0.2"
 gloo-timers = "0.3"
 js-sys = "0.3"
 
-# Cloudflare Workers
-worker = "0.5"
+# shared-crates
+worker_utils = { git = "https://github.com/defrag-au/shared-crates", package = "worker_utils", rev = "fc02f9bf1df9016f43affaf9d848565372b2dc18" }
+worker_stack = { git = "https://github.com/defrag-au/shared-crates", package = "worker_stack", rev = "fc02f9bf1df9016f43affaf9d848565372b2dc18" }
+test_utils = { git = "https://github.com/defrag-au/shared-crates", package = "test_utils", rev = "fc02f9bf1df9016f43affaf9d848565372b2dc18" }
+cnft-tools = { git = "https://github.com/defrag-au/shared-crates", package = "cnft-tools", rev = "fc02f9bf1df9016f43affaf9d848565372b2dc18" }
