@@ -1,26 +1,28 @@
 [package]
-name = "viewer-cli"
-description = "CLI for syncing and managing NFT collection bundles"
+name = "viewer-ingest"
+description = "Ingestion pipeline for NFT collections"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "viewer"
-path = "src/main.rs"
-
 [dependencies]
 viewer-format = { workspace = true }
-viewer-bundle = { workspace = true }
 viewer-binary = { workspace = true }
-viewer-ingest = { workspace = true }
 cnft_tools = { workspace = true }
-clap = { workspace = true }
+
 tokio = { workspace = true }
+reqwest = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml = { workspace = true }
+
+# For IPFS gateway racing
+futures = "0.3"
+rand = "0.8"
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

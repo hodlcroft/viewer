@@ -2,7 +2,7 @@ name = "preview-viewer"
 main = "build/worker/shim.mjs"
 compatibility_date = "2025-08-31"
 routes = [
-    { pattern = "preview.compositor.hodlcroft.com", custom_domain = true },
+    { pattern = "viewer.hodlcroft.com", custom_domain = true },
 ]
 
 [observability]
@@ -18,8 +18,8 @@ binding = "CACHE"
 
 # R2 bucket for compositor generated collections
 [[r2_buckets]]
-binding = "COMPOSITOR_BUCKET"
-bucket_name = "hodlcroft-compositor"
+binding = "STORAGE"
+bucket_name = "hodlcroft"
 
 # Static assets configuration for frontend
 [assets]
