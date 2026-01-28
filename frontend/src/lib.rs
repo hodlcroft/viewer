@@ -149,8 +149,8 @@ pub struct TokenInfo {
 }
 
 impl CollectionData {
-    /// Parse collection.bin and sprites.bin data
-    pub fn parse(slug: String, data: Vec<u8>, sprites_data: Vec<u8>) -> Result<Self, String> {
+    /// Parse collection.bin and optionally sprites.bin data
+    pub fn parse(slug: String, data: Vec<u8>, sprites_data: Option<Vec<u8>>) -> Result<Self, String> {
         use viewer_binary::{
             HEADER_SIZE, Header, HcfMetadata, MAGIC, SpriteIndex, TraitSchema,
         };
@@ -231,10 +231,10 @@ impl CollectionData {
         let hcf_index_size = header.hcf_index_size();
         let hcf_index_start = header.hcf_index_offset as usize;
 
-        // Parse sprite index from sprites.bin
-        let sprite_index = SpriteIndex::from_bytes(&sprites_data)
-            .ok_or("Failed to parse sprites.bin")?;
-        let sprite_header = sprite_index.header();
+        // Parse sprite index from sprites.bin (optional)
+        let sprite_index = sprites_data
+            .as_ref()
+            .and_then(|data| SpriteIndex::from_bytes(data));
 
         // Parse tokens
         // Binary format (from tokens.rs, sprite data now in sprites.bin):
@@ -274,9 +274,10 @@ impl CollectionData {
             ]) as usize;
             let asset_id = read_string_at(&data[asset_id_index_start..], asset_id_str_offset);
 
-            // Look up sprite location from sprites.bin
+            // Look up sprite location from sprites.bin (if available)
             let (sprite_sheet, sprite_x, sprite_y) = sprite_index
-                .lookup(&asset_id)
+                .as_ref()
+                .and_then(|idx| idx.lookup(&asset_id))
                 .unwrap_or((0, 0, 0));
 
             // Resolve name - high bit indicates custom name vs pattern
@@ -334,17 +335,27 @@ impl CollectionData {
             });
         }
 
+        // Get sprite metadata from sprites.bin header, or use defaults if not available
+        let (sprite_thumb_width, sprite_thumb_height, sprite_grid_columns, sprite_grid_rows, sprite_sheet_count) =
+            if let Some(ref idx) = sprite_index {
+                let h = idx.header();
+                (h.thumb_width, h.thumb_height, h.grid_columns, h.grid_rows, h.sheet_count)
+            } else {
+                // Defaults when sprites.bin not available
+                (256, 256, 4, 4, 0)
+            };
+
         Ok(CollectionData {
             slug,
             raw: Arc::new(data),
             token_count: header.token_count,
             trait_count: header.trait_count,
             hide_rarity: header.hide_rarity(),
-            sprite_thumb_width: sprite_header.thumb_width,
-            sprite_thumb_height: sprite_header.thumb_height,
-            sprite_grid_columns: sprite_header.grid_columns,
-            sprite_grid_rows: sprite_header.grid_rows,
-            sprite_sheet_count: sprite_header.sheet_count,
+            sprite_thumb_width,
+            sprite_thumb_height,
+            sprite_grid_columns,
+            sprite_grid_rows,
+            sprite_sheet_count,
             hcf: hcf_info,
             traits,
             tokens,
@@ -408,7 +419,7 @@ impl CollectionCache {
     }
 }
 
-/// Fetch and parse collection data (loads collection.bin and sprites.bin in parallel)
+/// Fetch and parse collection data (loads collection.bin and optionally sprites.bin in parallel)
 pub async fn fetch_collection(
     slug: &str,
     cache: &CollectionCache,
@@ -428,24 +439,33 @@ pub async fn fetch_collection(
     );
 
     let collection_response = collection_response.map_err(|e| format!("Failed to fetch collection.bin: {e}"))?;
-    let sprites_response = sprites_response.map_err(|e| format!("Failed to fetch sprites.bin: {e}"))?;
 
     if !collection_response.ok() {
         return Err(format!("HTTP error fetching collection.bin: {}", collection_response.status()));
     }
-    if !sprites_response.ok() {
-        return Err(format!("HTTP error fetching sprites.bin: {}", sprites_response.status()));
-    }
 
-    let (collection_bytes, sprites_bytes) = futures::join!(
-        collection_response.binary(),
-        sprites_response.binary()
-    );
+    // sprites.bin is optional - may not exist yet during early testing
+    let sprites_available = sprites_response
+        .as_ref()
+        .map(|r| r.ok())
+        .unwrap_or(false);
 
-    let collection_bytes = collection_bytes.map_err(|e| format!("Failed to read collection.bin body: {e}"))?;
-    let sprites_bytes = sprites_bytes.map_err(|e| format!("Failed to read sprites.bin body: {e}"))?;
+    let collection_bytes = collection_response
+        .binary()
+        .await
+        .map_err(|e| format!("Failed to read collection.bin body: {e}"))?;
 
-    // Parse binary data
+    let sprites_bytes = if sprites_available {
+        sprites_response
+            .unwrap()
+            .binary()
+            .await
+            .ok()
+    } else {
+        None
+    };
+
+    // Parse binary data (sprites_bytes is optional)
     let data = CollectionData::parse(slug.to_string(), collection_bytes, sprites_bytes)?;
 
     // Cache it

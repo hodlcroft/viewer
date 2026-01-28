@@ -1,4 +1,4 @@
-use crate::{TokenInfo, collection_url};
+use crate::{collection_url, CollectionConfig, TokenInfo};
 use leptos::prelude::*;
 use leptos_router::components::A;
 
@@ -23,6 +23,11 @@ fn rarity_class(rank: u16, total: u32) -> &'static str {
 
 #[component]
 pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
+    // Get collection config from context (provided by GalleryPage)
+    let config = use_context::<CollectionConfig>();
+    let hide_rarity = config.map(|c| c.hide_rarity).unwrap_or(false);
+    let total_tokens = config.map(|c| c.total_tokens).unwrap_or(0);
+
     let id = token.asset_id.clone();
     let name = token.name.clone();
     let anchor_id = format!("token-{}", token.index);
@@ -37,8 +42,7 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
         sprite_url, token.sprite_x, token.sprite_y
     );
 
-    // TODO: Get total count from context for proper percentile calculation
-    let rank_class = rarity_class(token.rarity_rank, 2000);
+    let rank_class = rarity_class(token.rarity_rank, total_tokens);
 
     view! {
         <A href=detail_url attr:class="nft-card" attr:id=anchor_id>
@@ -50,7 +54,7 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
             ></div>
             <div class="nft-card-info">
                 <strong>{name}</strong>
-                {(token.rarity_rank > 0).then(|| view! {
+                {(!hide_rarity && token.rarity_rank > 0).then(|| view! {
                     <span class={format!("rank {rank_class}")}>{format!("Rank #{}", token.rarity_rank)}</span>
                 })}
             </div>
