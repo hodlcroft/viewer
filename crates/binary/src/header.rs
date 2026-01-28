@@ -48,8 +48,8 @@ pub struct Header {
     pub token_table_offset: u32,
     /// Offset to PHF data
     pub phf_offset: u32,
-    /// Offset to sprite metadata
-    pub sprites_offset: u32,
+    /// Reserved (was sprites_offset, now in sprites.bin)
+    pub reserved_sprites: u32,
     /// Offset to HCF metadata
     pub hcf_metadata_offset: u32,
     /// Offset to HCF index (array of offset/length per token)
@@ -113,7 +113,7 @@ impl Header {
             trait_index_offset: 0,
             token_table_offset: 0,
             phf_offset: 0,
-            sprites_offset: 0,
+            reserved_sprites: 0,
             hcf_metadata_offset: 0,
             hcf_index_offset: 0,
             sources_offset: 0,
@@ -165,7 +165,7 @@ impl Header {
         buf[24..28].copy_from_slice(&self.trait_index_offset.to_le_bytes());
         buf[28..32].copy_from_slice(&self.token_table_offset.to_le_bytes());
         buf[32..36].copy_from_slice(&self.phf_offset.to_le_bytes());
-        buf[36..40].copy_from_slice(&self.sprites_offset.to_le_bytes());
+        buf[36..40].copy_from_slice(&self.reserved_sprites.to_le_bytes());
         buf[40..44].copy_from_slice(&self.hcf_metadata_offset.to_le_bytes());
         buf[44..48].copy_from_slice(&self.hcf_index_offset.to_le_bytes());
         buf[48..52].copy_from_slice(&self.sources_offset.to_le_bytes());
@@ -195,7 +195,7 @@ impl Header {
             trait_index_offset: u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]),
             token_table_offset: u32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]),
             phf_offset: u32::from_le_bytes([buf[32], buf[33], buf[34], buf[35]]),
-            sprites_offset: u32::from_le_bytes([buf[36], buf[37], buf[38], buf[39]]),
+            reserved_sprites: u32::from_le_bytes([buf[36], buf[37], buf[38], buf[39]]),
             hcf_metadata_offset: u32::from_le_bytes([buf[40], buf[41], buf[42], buf[43]]),
             hcf_index_offset: u32::from_le_bytes([buf[44], buf[45], buf[46], buf[47]]),
             sources_offset: u32::from_le_bytes([buf[48], buf[49], buf[50], buf[51]]),

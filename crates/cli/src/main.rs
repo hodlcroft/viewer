@@ -198,10 +198,12 @@ async fn cmd_sync_cardano(
     config_path: Option<PathBuf>,
     skip_images: bool,
 ) -> anyhow::Result<()> {
-    use viewer_binary::{HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, StringRef};
+    use viewer_binary::{
+        HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, SpriteIndexBuilder, StringRef,
+    };
     use viewer_ingest::{
         AssetSource, CnftToolsSource, CollectionWriter, HcfBundler, HcfConfig, Pipeline,
-        PipelineConfig, SpriteConfig, SpriteGenerator, SpriteLocation, TraitAnalysis, fetch_images,
+        PipelineConfig, SpriteConfig, SpriteGenerator, TraitAnalysis, fetch_images,
         fetch_images_iiif,
     };
 
@@ -254,7 +256,7 @@ async fn cmd_sync_cardano(
     // This establishes deterministic ordering and can be uploaded for testing
     println!("\n[3/6] Writing collection.bin (pass 1 - no HCF)...");
     let collection_bin_path = pipeline.dirs.root.join("collection.bin");
-    let sprite_config = SpriteConfig::default(); // Will be updated after sprite generation
+    let _sprite_config_placeholder = (); // Sprite config determined after sprite generation
     {
         use viewer_binary::{HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, StringRef};
 
@@ -293,22 +295,8 @@ async fn cmd_sync_cardano(
             writer.add_trait(trait_name, &value_counts)?;
         }
 
-        // Calculate sprite locations using default config
-        let thumbs_per_sheet = sprite_config.thumbs_per_sheet();
-
         // Add tokens
-        for (idx, asset) in assets.iter().enumerate() {
-            let sheet = (idx as u32) / thumbs_per_sheet;
-            let pos_in_sheet = (idx as u32) % thumbs_per_sheet;
-            let col = pos_in_sheet % sprite_config.grid_columns;
-            let row = pos_in_sheet / sprite_config.grid_columns;
-
-            let sprite = SpriteLocation {
-                sheet: sheet as u16,
-                x: col as u8,
-                y: row as u8,
-            };
-
+        for asset in &assets {
             let traits: Vec<(u8, u8)> = asset
                 .traits
                 .iter()
@@ -322,7 +310,6 @@ async fn cmd_sync_cardano(
                 traits,
                 rarity_rank: asset.rarity_rank.unwrap_or(0) as u16,
                 rarity_score: 0,
-                sprite,
                 source_index: None,
             };
 
@@ -448,6 +435,40 @@ async fn cmd_sync_cardano(
             total_size
         );
 
+        // Generate sprites.bin index file
+        let sprites_bin_path = pipeline.dirs.root.join("sprites.bin");
+        let thumbs_per_sheet = sprite_config_actual.thumbs_per_sheet();
+        let mut sprite_builder = SpriteIndexBuilder::new(
+            sheets.len() as u16,
+            sprite_config_actual.thumb_width as u16,
+            sprite_config_actual.thumb_height as u16,
+            sprite_config_actual.grid_columns as u8,
+            sprite_config_actual.grid_rows as u8,
+        );
+
+        for (idx, asset) in assets.iter().enumerate() {
+            let sheet = (idx as u32) / thumbs_per_sheet;
+            let pos_in_sheet = (idx as u32) % thumbs_per_sheet;
+            let col = pos_in_sheet % sprite_config_actual.grid_columns;
+            let row = pos_in_sheet / sprite_config_actual.grid_columns;
+
+            sprite_builder.add(&asset.encoded_name, sheet as u16, col as u8, row as u8);
+        }
+
+        let sprite_index_data = sprite_builder.build();
+        std::fs::write(&sprites_bin_path, &sprite_index_data)?;
+        println!(
+            "  Written {} ({:.2} KB, {} entries)",
+            sprites_bin_path.display(),
+            sprite_index_data.len() as f64 / 1024.0,
+            assets.len()
+        );
+        tracing::info!(
+            "Wrote sprites.bin: {} bytes, {} entries",
+            sprite_index_data.len(),
+            assets.len()
+        );
+
         pipeline.state.sprites_complete = true;
         pipeline.save_state().ok();
     }
@@ -549,22 +570,8 @@ async fn cmd_sync_cardano(
             writer.add_trait(trait_name, &value_counts)?;
         }
 
-        // Calculate sprite locations using actual detected config
-        let thumbs_per_sheet = sprite_config_actual.thumbs_per_sheet();
-
         // Add tokens
-        for (idx, asset) in assets.iter().enumerate() {
-            let sheet = (idx as u32) / thumbs_per_sheet;
-            let pos_in_sheet = (idx as u32) % thumbs_per_sheet;
-            let col = pos_in_sheet % sprite_config_actual.grid_columns;
-            let row = pos_in_sheet / sprite_config_actual.grid_columns;
-
-            let sprite = SpriteLocation {
-                sheet: sheet as u16,
-                x: col as u8,
-                y: row as u8,
-            };
-
+        for asset in &assets {
             let traits: Vec<(u8, u8)> = asset
                 .traits
                 .iter()
@@ -578,7 +585,6 @@ async fn cmd_sync_cardano(
                 traits,
                 rarity_rank: asset.rarity_rank.unwrap_or(0) as u16,
                 rarity_score: 0, // TODO: Calculate rarity score
-                sprite,
                 source_index: None,
             };
 

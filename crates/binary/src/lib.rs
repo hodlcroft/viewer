@@ -33,6 +33,7 @@ mod sources;
 mod sprites;
 mod string_ref_size;
 mod strings;
+mod thumbnails;
 mod tokens;
 mod traits;
 
@@ -44,6 +45,10 @@ pub use sources::{SourceMetadata, SourcesSection};
 pub use sprites::{SPRITE_METADATA_SIZE, SpriteFormat, SpriteMetadata};
 pub use string_ref_size::StringRefSize;
 pub use strings::{StringRef, StringTable, StringTableBuilder};
+pub use thumbnails::{
+    SPRITE_INDEX_ENTRY_SIZE, SPRITE_INDEX_HEADER_SIZE, SPRITE_INDEX_MAGIC, SPRITE_INDEX_VERSION,
+    SpriteIndex, SpriteIndexBuilder, SpriteIndexEntry, SpriteIndexHeader, hash_asset_id,
+};
 pub use tokens::{
     NAME_REF_CUSTOM_FLAG, NAME_REF_OFFSET_MASK, TOKEN_FIXED_SIZE, TOKEN_FIXED_SIZE_MULTI_SOURCE,
     TokenEntry, read_hcf_location, write_hcf_location,

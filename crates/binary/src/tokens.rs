@@ -1,5 +1,6 @@
 //! Token table entries with variable-size bitmaps.
 //!
+//! Sprite locations are stored separately in thumbnails.bin.
 //! HCF locations are stored in a separate index section, not inline with tokens.
 //! This allows the token table to be built before HCF bundling is complete.
 
@@ -14,25 +15,21 @@ pub const NAME_REF_OFFSET_MASK: u32 = 0x7FFF_FFFF;
 /// Fixed fields in a token entry (before variable-size data).
 ///
 /// Layout (single-source):
-/// - sprite_sheet: u16
-/// - sprite_x: u8
-/// - sprite_y: u8
 /// - rarity_rank: u16
 /// - rarity_score: u16 (fixed-point, score * 100)
 /// - name_ref: u32
-/// Total fixed: 12 bytes
+/// Total fixed: 8 bytes
 ///
 /// Layout (multi-source, FLAG_MULTI_SOURCE set):
 /// - source_index: u8 (added at start)
-/// - sprite_sheet: u16
-/// - sprite_x: u8
-/// - sprite_y: u8
 /// - rarity_rank: u16
 /// - rarity_score: u16 (fixed-point, score * 100)
 /// - name_ref: u32
-/// Total fixed: 13 bytes
-pub const TOKEN_FIXED_SIZE: usize = 12;
-pub const TOKEN_FIXED_SIZE_MULTI_SOURCE: usize = 13;
+/// Total fixed: 9 bytes
+///
+/// Note: Sprite locations are stored in thumbnails.bin, not here.
+pub const TOKEN_FIXED_SIZE: usize = 8;
+pub const TOKEN_FIXED_SIZE_MULTI_SOURCE: usize = 9;
 
 /// A single token entry in the token table.
 #[derive(Debug, Clone)]
@@ -40,11 +37,6 @@ pub struct TokenEntry {
     // Source index (only present if FLAG_MULTI_SOURCE, 1 byte)
     // For single-source collections, all tokens implicitly belong to source 0
     pub source_index: Option<u8>,
-
-    // Sprite location (4 bytes)
-    pub sprite_sheet: u16,
-    pub sprite_x: u8,
-    pub sprite_y: u8,
 
     // Rarity (4 bytes)
     pub rarity_rank: u16,
@@ -82,12 +74,9 @@ impl TokenEntry {
         } else {
             0
         };
-        buf[offset..offset + 2].copy_from_slice(&self.sprite_sheet.to_le_bytes());
-        buf[offset + 2] = self.sprite_x;
-        buf[offset + 3] = self.sprite_y;
-        buf[offset + 4..offset + 6].copy_from_slice(&self.rarity_rank.to_le_bytes());
-        buf[offset + 6..offset + 8].copy_from_slice(&self.rarity_score.to_le_bytes());
-        buf[offset + 8..offset + 12].copy_from_slice(&self.name_ref.to_le_bytes());
+        buf[offset..offset + 2].copy_from_slice(&self.rarity_rank.to_le_bytes());
+        buf[offset + 2..offset + 4].copy_from_slice(&self.rarity_score.to_le_bytes());
+        buf[offset + 4..offset + 8].copy_from_slice(&self.name_ref.to_le_bytes());
     }
 
     /// Read fixed fields from bytes.
@@ -101,16 +90,13 @@ impl TokenEntry {
         };
         Self {
             source_index,
-            sprite_sheet: u16::from_le_bytes([buf[offset], buf[offset + 1]]),
-            sprite_x: buf[offset + 2],
-            sprite_y: buf[offset + 3],
-            rarity_rank: u16::from_le_bytes([buf[offset + 4], buf[offset + 5]]),
-            rarity_score: u16::from_le_bytes([buf[offset + 6], buf[offset + 7]]),
+            rarity_rank: u16::from_le_bytes([buf[offset], buf[offset + 1]]),
+            rarity_score: u16::from_le_bytes([buf[offset + 2], buf[offset + 3]]),
             name_ref: u32::from_le_bytes([
-                buf[offset + 8],
-                buf[offset + 9],
-                buf[offset + 10],
-                buf[offset + 11],
+                buf[offset + 4],
+                buf[offset + 5],
+                buf[offset + 6],
+                buf[offset + 7],
             ]),
         }
     }
@@ -181,32 +167,29 @@ mod tests {
 
     #[test]
     fn test_entry_size_single_source() {
-        // U64 bitmap (8) + fixed (12) = 20
-        assert_eq!(TokenEntry::entry_size(BitmapSize::U64, false), 20);
+        // U64 bitmap (8) + fixed (8) = 16
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U64, false), 16);
 
-        // U128 bitmap (16) + fixed (12) = 28
-        assert_eq!(TokenEntry::entry_size(BitmapSize::U128, false), 28);
+        // U128 bitmap (16) + fixed (8) = 24
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U128, false), 24);
 
-        // U256 bitmap (32) + fixed (12) = 44
-        assert_eq!(TokenEntry::entry_size(BitmapSize::U256, false), 44);
+        // U256 bitmap (32) + fixed (8) = 40
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U256, false), 40);
     }
 
     #[test]
     fn test_entry_size_multi_source() {
-        // U64 bitmap (8) + fixed (13) = 21
-        assert_eq!(TokenEntry::entry_size(BitmapSize::U64, true), 21);
+        // U64 bitmap (8) + fixed (9) = 17
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U64, true), 17);
 
-        // U128 bitmap (16) + fixed (13) = 29
-        assert_eq!(TokenEntry::entry_size(BitmapSize::U128, true), 29);
+        // U128 bitmap (16) + fixed (9) = 25
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U128, true), 25);
     }
 
     #[test]
     fn test_token_entry_roundtrip_single_source() {
         let entry = TokenEntry {
             source_index: None,
-            sprite_sheet: 5,
-            sprite_x: 3,
-            sprite_y: 7,
             rarity_rank: 42,
             rarity_score: 1234,
             name_ref: 100,
@@ -217,9 +200,6 @@ mod tests {
         let restored = TokenEntry::read_fixed(&buf, false);
 
         assert_eq!(restored.source_index, None);
-        assert_eq!(restored.sprite_sheet, 5);
-        assert_eq!(restored.sprite_x, 3);
-        assert_eq!(restored.sprite_y, 7);
         assert_eq!(restored.rarity_rank, 42);
         assert_eq!(restored.rarity_score, 1234);
         assert_eq!(restored.name_ref, 100);
@@ -229,9 +209,6 @@ mod tests {
     fn test_token_entry_roundtrip_multi_source() {
         let entry = TokenEntry {
             source_index: Some(2),
-            sprite_sheet: 5,
-            sprite_x: 3,
-            sprite_y: 7,
             rarity_rank: 42,
             rarity_score: 1234,
             name_ref: 100,
@@ -242,9 +219,6 @@ mod tests {
         let restored = TokenEntry::read_fixed(&buf, true);
 
         assert_eq!(restored.source_index, Some(2));
-        assert_eq!(restored.sprite_sheet, 5);
-        assert_eq!(restored.sprite_x, 3);
-        assert_eq!(restored.sprite_y, 7);
         assert_eq!(restored.rarity_rank, 42);
         assert_eq!(restored.rarity_score, 1234);
         assert_eq!(restored.name_ref, 100);
