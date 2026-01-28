@@ -10,6 +10,10 @@
 //! - Sprite metadata
 //! - HCF metadata
 //! - Sources section
+//!
+//! Supports two-pass construction:
+//! 1. Pass 1: Build everything except HCF locations (traits, sprites, rarity)
+//! 2. Pass 2: Add HCF locations and finalize
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -40,15 +44,23 @@ pub enum WriterError {
 
     #[error("Mismatched token count: expected {expected}, got {actual}")]
     TokenCountMismatch { expected: usize, actual: usize },
+
+    #[error("HCF locations not set - call finalize_with_hcf first")]
+    HcfNotFinalized,
 }
 
 /// Token data for writing to binary format.
+///
+/// Note: HCF locations are stored in a separate index section, not with tokens.
+/// This allows the token table to be built before HCF bundling is complete.
 #[derive(Debug, Clone)]
 pub struct TokenData {
     /// Token name (for string table)
     pub name: String,
     /// Asset ID (for PHF)
     pub asset_id: String,
+    /// Encoded asset name (hex) - used for deterministic ordering
+    pub encoded_name: String,
     /// Trait values as (trait_index, value_index) pairs
     pub traits: Vec<(u8, u8)>,
     /// Rarity rank (1-based)
@@ -57,8 +69,6 @@ pub struct TokenData {
     pub rarity_score: u16,
     /// Sprite location
     pub sprite: SpriteLocation,
-    /// HCF image location
-    pub hcf: ImageLocation,
     /// Source index (for multi-source collections)
     pub source_index: Option<u8>,
 }
@@ -128,16 +138,35 @@ impl CollectionWriter {
     }
 
     /// Write the collection to a file.
-    pub fn write_to_file(&self, path: &Path) -> Result<(), WriterError> {
+    ///
+    /// `hcf_locations` must be in the same order as tokens were added.
+    pub fn write_to_file(
+        &self,
+        path: &Path,
+        hcf_locations: &[ImageLocation],
+    ) -> Result<(), WriterError> {
+        if hcf_locations.len() != self.tokens.len() {
+            return Err(WriterError::TokenCountMismatch {
+                expected: self.tokens.len(),
+                actual: hcf_locations.len(),
+            });
+        }
+
         let file = std::fs::File::create(path)?;
         let mut writer = std::io::BufWriter::new(file);
-        self.write(&mut writer)?;
+        self.write(&mut writer, hcf_locations)?;
         writer.flush()?;
         Ok(())
     }
 
     /// Write the collection to a writer.
-    pub fn write(&self, writer: &mut impl Write) -> Result<(), WriterError> {
+    ///
+    /// `hcf_locations` must be in the same order as tokens were added.
+    pub fn write(
+        &self,
+        writer: &mut impl Write,
+        hcf_locations: &[ImageLocation],
+    ) -> Result<(), WriterError> {
         // Build string table (clone since build consumes)
         let string_table = self.strings.clone().build()?;
         let string_table_bytes = string_table.to_bytes();
@@ -156,10 +185,8 @@ impl CollectionWriter {
 
         let token_table_offset = trait_index_offset + trait_index_bytes.len() as u32;
 
-        // Calculate token entry size
+        // Build token table (without HCF - that's separate now)
         let multi_source = self.sources.is_multi_source();
-        let token_entry_size =
-            TokenEntry::entry_size(self.bitmap_size, self.hcf_index_size, multi_source);
         let token_table_bytes = self.build_token_table(multi_source)?;
 
         let phf_offset = token_table_offset + token_table_bytes.len() as u32;
@@ -175,7 +202,11 @@ impl CollectionWriter {
         let hcf_metadata_offset = sprites_offset + sprites_bytes.len() as u32;
         let hcf_metadata_bytes = self.hcf_metadata.to_bytes();
 
-        let sources_offset = hcf_metadata_offset + hcf_metadata_bytes.len() as u32;
+        // HCF index section (array of offset/length per token)
+        let hcf_index_offset = hcf_metadata_offset + hcf_metadata_bytes.len() as u32;
+        let hcf_index_bytes = self.build_hcf_index(hcf_locations);
+
+        let sources_offset = hcf_index_offset + hcf_index_bytes.len() as u32;
         let sources_bytes = self.sources.to_bytes();
 
         // Build header
@@ -193,6 +224,7 @@ impl CollectionWriter {
         header.phf_offset = phf_offset;
         header.sprites_offset = sprites_offset;
         header.hcf_metadata_offset = hcf_metadata_offset;
+        header.hcf_index_offset = hcf_index_offset;
         header.sources_offset = sources_offset;
 
         // Write all sections
@@ -204,15 +236,15 @@ impl CollectionWriter {
         writer.write_all(&phf_bytes)?;
         writer.write_all(&sprites_bytes)?;
         writer.write_all(&hcf_metadata_bytes)?;
+        writer.write_all(&hcf_index_bytes)?;
         writer.write_all(&sources_bytes)?;
 
         Ok(())
     }
 
-    /// Build the token table bytes.
+    /// Build the token table bytes (without HCF locations).
     fn build_token_table(&self, multi_source: bool) -> Result<Vec<u8>, WriterError> {
-        let entry_size =
-            TokenEntry::entry_size(self.bitmap_size, self.hcf_index_size, multi_source);
+        let entry_size = TokenEntry::entry_size(self.bitmap_size, multi_source);
         let mut bytes = Vec::with_capacity(self.tokens.len() * entry_size);
 
         for token in &self.tokens {
@@ -241,19 +273,29 @@ impl CollectionWriter {
             entry_bytes[bitmap_offset..bitmap_offset + self.bitmap_size.byte_size()]
                 .copy_from_slice(&bitmap[..self.bitmap_size.byte_size()]);
 
-            // Write HCF location
-            let hcf_offset = bitmap_offset + self.bitmap_size.byte_size();
-            viewer_binary::write_hcf_location(
-                token.hcf.global_offset,
-                token.hcf.length,
-                &mut entry_bytes[hcf_offset..],
-                self.hcf_index_size,
-            );
-
             bytes.extend_from_slice(&entry_bytes);
         }
 
         Ok(bytes)
+    }
+
+    /// Build the HCF index section (array of offset/length per token).
+    fn build_hcf_index(&self, locations: &[ImageLocation]) -> Vec<u8> {
+        let entry_size = self.hcf_index_size.byte_size();
+        let mut bytes = Vec::with_capacity(locations.len() * entry_size);
+
+        for loc in locations {
+            let mut entry = vec![0u8; entry_size];
+            viewer_binary::write_hcf_location(
+                loc.global_offset,
+                loc.length,
+                &mut entry,
+                self.hcf_index_size,
+            );
+            bytes.extend_from_slice(&entry);
+        }
+
+        bytes
     }
 
     /// Encode trait values into a bitmap.
@@ -314,6 +356,7 @@ mod tests {
         let token = TokenData {
             name: "Token #1".to_string(),
             asset_id: "asset123".to_string(),
+            encoded_name: "546f6b656e2331".to_string(),
             traits: vec![(0, 1), (1, 0)], // Blue background, Open eyes
             rarity_rank: 1,
             rarity_score: 100,
@@ -322,19 +365,21 @@ mod tests {
                 x: 0,
                 y: 0,
             },
-            hcf: ImageLocation {
-                global_offset: 0,
-                length: 1000,
-                shard_index: 0,
-                shard_offset: 0,
-            },
             source_index: None,
         };
 
         writer.add_token(token);
 
+        // HCF locations are provided separately
+        let hcf_locations = vec![ImageLocation {
+            global_offset: 0,
+            length: 1000,
+            shard_index: 0,
+            shard_offset: 0,
+        }];
+
         let mut output = Vec::new();
-        writer.write(&mut output).unwrap();
+        writer.write(&mut output, &hcf_locations).unwrap();
 
         // Verify header magic
         assert_eq!(&output[0..4], b"COLL");

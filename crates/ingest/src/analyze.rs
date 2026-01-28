@@ -1,7 +1,7 @@
 //! Trait analysis for determining bitmap sizing and building schemas.
 
 use crate::NormalizedAsset;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use viewer_binary::BitmapSize;
 
 /// Result of analyzing a collection's traits.
@@ -69,6 +69,39 @@ impl TraitAnalysis {
             self.bitmap_size,
             trait_summary.join(", ")
         )
+    }
+
+    /// Total number of trait values (alias for total_combinations).
+    pub fn total_values(&self) -> usize {
+        self.total_combinations
+    }
+
+    /// Iterator over trait names and their values with counts.
+    ///
+    /// Returns tuples of (trait_name, Vec<(value, count)>).
+    pub fn trait_values(&self) -> impl Iterator<Item = (&str, Vec<(String, u16)>)> {
+        self.trait_values.iter().map(|(name, values)| {
+            let values_with_counts: Vec<(String, u16)> =
+                values.iter().map(|(v, c)| (v.clone(), *c as u16)).collect();
+            (name.as_str(), values_with_counts)
+        })
+    }
+
+    /// Encode a trait name and value to (trait_index, value_index).
+    ///
+    /// Returns None if the trait or value is not found (e.g., was ignored).
+    pub fn encode_trait(&self, name: &str, value: &[String]) -> Option<(u8, u8)> {
+        // Find trait index
+        let trait_idx = self.trait_values.keys().position(|n| n == name)?;
+
+        // Get the values for this trait
+        let trait_values = self.trait_values.get(name)?;
+
+        // Find value index (use first value for multi-valued traits)
+        let first_value = value.first()?;
+        let value_idx = trait_values.keys().position(|v| v == first_value)?;
+
+        Some((trait_idx as u8, value_idx as u8))
     }
 }
 

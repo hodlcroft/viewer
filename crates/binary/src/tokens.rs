@@ -1,4 +1,7 @@
-//! Token table entries with variable-size bitmaps and HCF locations.
+//! Token table entries with variable-size bitmaps.
+//!
+//! HCF locations are stored in a separate index section, not inline with tokens.
+//! This allows the token table to be built before HCF bundling is complete.
 
 use crate::{BitmapSize, HcfIndexSize};
 
@@ -50,18 +53,17 @@ pub struct TokenEntry {
 }
 
 impl TokenEntry {
-    /// Calculate the total entry size including variable fields.
-    pub fn entry_size(
-        bitmap_size: BitmapSize,
-        hcf_index_size: HcfIndexSize,
-        multi_source: bool,
-    ) -> usize {
+    /// Calculate the total entry size including variable bitmap.
+    ///
+    /// Note: HCF locations are stored separately in the HCF index section,
+    /// not inline with token entries.
+    pub fn entry_size(bitmap_size: BitmapSize, multi_source: bool) -> usize {
         let fixed = if multi_source {
             TOKEN_FIXED_SIZE_MULTI_SOURCE
         } else {
             TOKEN_FIXED_SIZE
         };
-        fixed + bitmap_size.byte_size() + hcf_index_size.byte_size()
+        fixed + bitmap_size.byte_size()
     }
 
     /// Serialize fixed fields to bytes.
@@ -168,32 +170,23 @@ mod tests {
 
     #[test]
     fn test_entry_size_single_source() {
-        // U64 bitmap (8) + U32U16 HCF (6) + fixed (10) = 24
-        assert_eq!(
-            TokenEntry::entry_size(BitmapSize::U64, HcfIndexSize::U32U16, false),
-            24
-        );
+        // U64 bitmap (8) + fixed (10) = 18
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U64, false), 18);
 
-        // U128 bitmap (16) + U32U24 HCF (7) + fixed (10) = 33
-        assert_eq!(
-            TokenEntry::entry_size(BitmapSize::U128, HcfIndexSize::U32U24, false),
-            33
-        );
+        // U128 bitmap (16) + fixed (10) = 26
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U128, false), 26);
+
+        // U256 bitmap (32) + fixed (10) = 42
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U256, false), 42);
     }
 
     #[test]
     fn test_entry_size_multi_source() {
-        // U64 bitmap (8) + U32U16 HCF (6) + fixed (11) = 25
-        assert_eq!(
-            TokenEntry::entry_size(BitmapSize::U64, HcfIndexSize::U32U16, true),
-            25
-        );
+        // U64 bitmap (8) + fixed (11) = 19
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U64, true), 19);
 
-        // U128 bitmap (16) + U32U24 HCF (7) + fixed (11) = 34
-        assert_eq!(
-            TokenEntry::entry_size(BitmapSize::U128, HcfIndexSize::U32U24, true),
-            34
-        );
+        // U128 bitmap (16) + fixed (11) = 27
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U128, true), 27);
     }
 
     #[test]
