@@ -166,6 +166,7 @@ async fn cmd_sync_cardano(
 ) -> anyhow::Result<()> {
     use viewer_ingest::{
         AssetSource, CnftToolsSource, Pipeline, PipelineConfig, TraitAnalysis, fetch_images,
+        fetch_images_iiif,
     };
 
     println!("Syncing Cardano collection: {}", policy_id);
@@ -195,7 +196,6 @@ async fn cmd_sync_cardano(
 
     // Fetch images
     if !skip_images {
-        println!("\n[3/5] Fetching images from IPFS...");
         let progress_cb = Box::new(
             |processed: usize, total: usize, fetched: usize, failed: usize| {
                 print!(
@@ -206,11 +206,40 @@ async fn cmd_sync_cardano(
                 std::io::stdout().flush().ok();
             },
         );
-        let result = fetch_images(&mut pipeline, &assets, Some(progress_cb)).await?;
+
+        let result = if config.images.is_iiif() {
+            println!("\n[3/5] Fetching images from IIIF...");
+            fetch_images_iiif(
+                &mut pipeline,
+                &assets,
+                policy_id,
+                &config.images,
+                Some(progress_cb),
+            )
+            .await?
+        } else {
+            println!("\n[3/5] Fetching images from IPFS...");
+            fetch_images(&mut pipeline, &assets, Some(progress_cb)).await?
+        };
+
         println!(
             "\r  Complete: {} fetched, {} skipped, {} failed    ",
-            result.fetched, result.skipped, result.failed
+            result.fetched,
+            result.skipped,
+            result.failed.len()
         );
+
+        // Abort if any images failed
+        if !result.failed.is_empty() {
+            println!("\nFailed to fetch {} images:", result.failed.len());
+            for id in &result.failed {
+                println!("  - {}", id);
+            }
+            anyhow::bail!(
+                "Cannot continue with {} failed images. Fix the issues and retry.",
+                result.failed.len()
+            );
+        }
     } else {
         println!("\n[3/5] Skipping image fetch (--skip-images)");
     }

@@ -178,9 +178,20 @@ pub struct ValueStats {
 /// Stored in `configs/{chain}/{collection_id}.toml`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IngestionConfig {
+    /// URL-friendly identifier for the collection (e.g., "blackflag")
+    ///
+    /// Used for routes like `blackflag.viewer.hodlcroft.com` or
+    /// `viewer.hodlcroft.com/blackflag`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+
     /// Override display name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+
+    /// Image source configuration
+    #[serde(default)]
+    pub images: ImageSourceConfig,
 
     /// Trait configuration
     #[serde(default)]
@@ -189,6 +200,59 @@ pub struct IngestionConfig {
     /// Rarity calculation overrides
     #[serde(default)]
     pub rarity: RarityConfig,
+}
+
+/// Image source configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSourceConfig {
+    /// Image source type: "ipfs" (default) or "iiif"
+    #[serde(default = "default_image_source")]
+    pub source: String,
+
+    /// IIIF base URL (required if source = "iiif")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iiif_base_url: Option<String>,
+
+    /// IIIF max size parameter (default: 1686)
+    #[serde(default = "default_iiif_size")]
+    pub iiif_size: u32,
+}
+
+fn default_image_source() -> String {
+    "ipfs".to_string()
+}
+
+fn default_iiif_size() -> u32 {
+    1686
+}
+
+impl Default for ImageSourceConfig {
+    fn default() -> Self {
+        Self {
+            source: default_image_source(),
+            iiif_base_url: None,
+            iiif_size: default_iiif_size(),
+        }
+    }
+}
+
+impl ImageSourceConfig {
+    /// Build a IIIF image URL for a Cardano asset.
+    pub fn iiif_url(&self, policy_id: &str, encoded_name: &str) -> Option<String> {
+        let base = self.iiif_base_url.as_ref()?;
+        Some(format!(
+            "{}/iiif/3/{}:{}/full/{},/0/default.jpg",
+            base.trim_end_matches('/'),
+            policy_id,
+            encoded_name,
+            self.iiif_size
+        ))
+    }
+
+    /// Check if using IIIF source.
+    pub fn is_iiif(&self) -> bool {
+        self.source == "iiif"
+    }
 }
 
 /// Trait processing configuration.

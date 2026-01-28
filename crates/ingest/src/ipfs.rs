@@ -55,12 +55,10 @@ impl Gateway {
 
 /// Default IPFS gateways in priority order.
 pub fn default_gateways() -> Vec<Gateway> {
-    vec![
-        Gateway::new("Blockfrost", "https://ipfs.blockfrost.io/ipfs/{cid}"),
-        Gateway::new("Pinata", "https://gateway.pinata.cloud/ipfs/{cid}"),
-        Gateway::new("Dweb", "https://dweb.link/ipfs/{cid}"),
-        Gateway::new("Cloudflare", "https://cloudflare-ipfs.com/ipfs/{cid}"),
-    ]
+    vec![Gateway::new(
+        "Pinata",
+        "https://gateway.pinata.cloud/ipfs/{cid}",
+    )]
 }
 
 /// Fetched image data with format detection.
@@ -299,6 +297,24 @@ impl IpfsFetcher {
         })?;
 
         let format = ImageFormat::from_magic_bytes(&bytes);
+
+        // Reject non-image responses (e.g., HTML error pages)
+        if format == ImageFormat::Unknown {
+            // Check if it looks like HTML
+            if bytes.starts_with(b"<!DOCTYPE")
+                || bytes.starts_with(b"<html")
+                || bytes.starts_with(b"<HTML")
+            {
+                return Err(FetchError::Gateway {
+                    gateway: gateway_name.to_string(),
+                    message: "Received HTML instead of image".to_string(),
+                });
+            }
+            return Err(FetchError::Gateway {
+                gateway: gateway_name.to_string(),
+                message: "Unknown image format".to_string(),
+            });
+        }
 
         debug!(
             "Gateway {} succeeded: {} bytes, format {:?}",

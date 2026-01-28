@@ -1,22 +1,20 @@
-# Black Flag Collection Config
+# Black Flag - 2K Cardano NFT Collection
 # Policy ID: b3dab69f7e6100849434fb1781e34bd12a916557f6231b8d2629b6f6
-# Collection size: 2000 tokens
 
-# Display name override
+slug = "blackflag"
 name = "Black Flag"
 
-# Traits to exclude from filtering/indexing
-# Use this for unique identifiers or high-cardinality traits
+[images]
+source = "iiif"
+iiif_base_url = "https://iiif.hodlcroft.com"
+iiif_size = 1686
+
 [traits]
+# Traits to exclude from filtering/indexing
+# "Rank" is already covered by rarity scoring, so we might want to exclude it
 ignore = []
 
-# Trait aliases for cleaner display (optional)
-# [traits.aliases]
-# "BACKGROUND" = "Background"
-
-# Rarity configuration
 [rarity]
-# Use CNFT.tools rarity ranks (available for this collection)
-use_source = true
-# Traits to exclude from rarity calculation if recalculating
+# Traits to exclude from rarity calculation
+# If using source rarity from CNFT.tools, this is less important
 exclude = []
