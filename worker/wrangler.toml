@@ -1,0 +1,21 @@
+name = "viewer"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-01-01"
+routes = [
+    { pattern = "viewer.hodlcroft.com", custom_domain = true },
+]
+
+[observability]
+enabled = true
+
+# Build configuration
+[build]
+command = "./build.sh"
+
+# Static assets configuration for frontend
+[assets]
+directory = "./dist/"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+# Run worker first for API routes
+run_worker_first = ["/api/*"]

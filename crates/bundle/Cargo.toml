@@ -1,0 +1,13 @@
+[package]
+name = "viewer-bundle"
+description = "Bundle format for NFT viewer - sprite sheets, image indices, and bundle I/O"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+viewer-format = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

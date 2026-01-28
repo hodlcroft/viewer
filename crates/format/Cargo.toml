@@ -1,0 +1,13 @@
+[package]
+name = "viewer-format"
+description = "Core format types for NFT viewer - asset details, collection info, and token metadata"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

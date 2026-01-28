@@ -1,0 +1,20 @@
+# Black Flag - 2K Cardano NFT Collection
+# Policy ID: b3dab69f7e6100849434fb1781e34bd12a916557f6231b8d2629b6f6
+
+slug = "blackflag"
+name = "Black Flag"
+
+[images]
+source = "iiif"
+iiif_base_url = "https://iiif.hodlcroft.com"
+iiif_size = 1686
+
+[traits]
+# Traits to exclude from filtering/indexing
+# "Rank" is already covered by rarity scoring, so we might want to exclude it
+ignore = []
+
+[rarity]
+# Traits to exclude from rarity calculation
+# If using source rarity from CNFT.tools, this is less important
+exclude = []
