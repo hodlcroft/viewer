@@ -301,6 +301,13 @@ impl SpriteGenerator {
     {
         use rayon::prelude::*;
 
+        // Limit rayon to half the available cores to avoid hobbling the system
+        let num_threads = (num_cpus::get() / 2).max(1);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build_global()
+            .ok(); // Ignore error if already initialized
+
         if sources.is_empty() {
             return Err(SpriteError::NoImages);
         }
@@ -326,10 +333,36 @@ impl SpriteGenerator {
 
         // Process one sheet at a time, but parallelize image loading/resizing within each sheet
         for sheet_idx in 0..total_sheets {
-            let sheet_start = Instant::now();
             let start = sheet_idx * images_per_sheet;
             let end = (start + images_per_sheet).min(sources.len());
             let sheet_sources = &sources[start..end];
+
+            // Check if sheet already exists
+            let path = output_dir.join(format!("{:04}.webp", sheet_idx));
+            if path.exists() {
+                // Sheet exists - just record locations and skip generation
+                for i in 0..sheet_sources.len() {
+                    let col = (i as u32) % config.grid_columns;
+                    let row = (i as u32) / config.grid_columns;
+                    locations.push(SpriteLocation {
+                        sheet: sheet_idx as u16,
+                        x: col as u8,
+                        y: row as u8,
+                    });
+                }
+                // Get file size for sheet info
+                let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                sheets.push(SpriteSheet {
+                    index: sheet_idx as u32,
+                    count: sheet_sources.len() as u32,
+                    path,
+                    file_size,
+                });
+                on_progress(end, total);
+                continue;
+            }
+
+            let sheet_start = Instant::now();
 
             info!(
                 sheet = sheet_idx + 1,
@@ -399,7 +432,6 @@ impl SpriteGenerator {
             }
 
             // Save sheet as lossy WebP
-            let path = output_dir.join(format!("{:04}.webp", sheet_idx));
             let save_start = Instant::now();
             let encoder = webp::Encoder::from_rgba(&sheet_img, sheet_width, sheet_height);
             let webp_data = encoder.encode(85.0); // Quality 85

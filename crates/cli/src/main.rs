@@ -243,12 +243,107 @@ async fn cmd_sync_cardano(
     pipeline.state.total_assets = assets.len();
 
     // Analyze traits
-    println!("\n[2/5] Analyzing traits...");
+    println!("\n[2/6] Analyzing traits...");
     let analysis = TraitAnalysis::from_assets(&assets, &ignore_traits)?;
     println!("  {}", analysis.summary());
     tracing::info!("Trait analysis: {}", analysis.summary());
 
     println!("  Build directory: {}", pipeline.dirs.root.display());
+
+    // Write collection.bin pass 1 (without HCF locations)
+    // This establishes deterministic ordering and can be uploaded for testing
+    println!("\n[3/6] Writing collection.bin (pass 1 - no HCF)...");
+    let collection_bin_path = pipeline.dirs.root.join("collection.bin");
+    let sprite_config = SpriteConfig::default(); // Will be updated after sprite generation
+    {
+        use viewer_binary::{HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, StringRef};
+
+        let sources = SourcesSection::new(vec![SourceMetadata {
+            chain: StringRef(0),
+            id: StringRef(1),
+            token_count: assets.len() as u32,
+            synced_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as u32,
+        }]);
+
+        // Placeholder HCF metadata (will be updated in pass 2)
+        let hcf_metadata = HcfMetadata {
+            shard_size: pipeline.config.hcf_shard_size as u32,
+            shard_count: 1,
+            image_format: ImageFormat::WebP,
+            max_dimension: 2048,
+        };
+
+        let mut writer = CollectionWriter::new(
+            sources,
+            hcf_metadata,
+            analysis.total_values(),
+            0, // total_hcf_size unknown yet
+            0, // max_image_size unknown yet
+        )
+        .ok_or_else(|| anyhow::anyhow!("Too many trait values for binary format"))?;
+
+        // Add trait definitions
+        for (trait_name, values) in analysis.trait_values() {
+            let value_counts: Vec<(&str, u16)> =
+                values.iter().map(|(v, c)| (v.as_str(), *c)).collect();
+            writer.add_trait(trait_name, &value_counts)?;
+        }
+
+        // Calculate sprite locations using default config
+        let thumbs_per_sheet = sprite_config.thumbs_per_sheet();
+
+        // Add tokens
+        for (idx, asset) in assets.iter().enumerate() {
+            let sheet = (idx as u32) / thumbs_per_sheet;
+            let pos_in_sheet = (idx as u32) % thumbs_per_sheet;
+            let col = pos_in_sheet % sprite_config.grid_columns;
+            let row = pos_in_sheet / sprite_config.grid_columns;
+
+            let sprite = SpriteLocation {
+                sheet: sheet as u16,
+                x: col as u8,
+                y: row as u8,
+            };
+
+            let traits: Vec<(u8, u8)> = asset
+                .traits
+                .iter()
+                .filter_map(|(name, values)| analysis.encode_trait(name, values))
+                .collect();
+
+            let token = viewer_ingest::TokenData {
+                name: asset.display_name.clone(),
+                asset_id: asset.encoded_name.clone(),
+                encoded_name: asset.encoded_name.clone(),
+                traits,
+                rarity_rank: asset.rarity_rank.unwrap_or(0) as u16,
+                rarity_score: 0,
+                sprite,
+                source_index: None,
+            };
+
+            writer.add_token(token)?;
+        }
+
+        // Write pass 1 (without HCF locations)
+        writer.write_to_file_without_hcf(&collection_bin_path)?;
+
+        let file_size = std::fs::metadata(&collection_bin_path)?.len();
+        println!(
+            "  Written {} ({:.2} KB, {} tokens) - ready for upload",
+            collection_bin_path.display(),
+            file_size as f64 / 1024.0,
+            assets.len()
+        );
+        tracing::info!(
+            "Wrote collection.bin pass 1: {} bytes, {} tokens (no HCF)",
+            file_size,
+            assets.len()
+        );
+    }
 
     // Fetch images
     if !skip_images {
@@ -264,7 +359,7 @@ async fn cmd_sync_cardano(
         );
 
         let result = if config.images.is_iiif() {
-            println!("\n[3/5] Fetching images from IIIF...");
+            println!("\n[4/6] Fetching images from IIIF...");
             fetch_images_iiif(
                 &mut pipeline,
                 &assets,
@@ -274,7 +369,7 @@ async fn cmd_sync_cardano(
             )
             .await?
         } else {
-            println!("\n[3/5] Fetching images from IPFS...");
+            println!("\n[4/6] Fetching images from IPFS...");
             fetch_images(&mut pipeline, &assets, Some(progress_cb)).await?
         };
 
@@ -297,12 +392,13 @@ async fn cmd_sync_cardano(
             );
         }
     } else {
-        println!("\n[3/5] Skipping image fetch (--skip-images)");
+        println!("\n[4/6] Skipping image fetch (--skip-images)");
     }
 
     // Generate sprites from raw images (auto-detects aspect ratio)
-    println!("\n[4/5] Generating sprites...");
-    let sprite_config: SpriteConfig;
+    // Existing sheets are automatically skipped
+    println!("\n[5/6] Generating sprites...");
+    let sprite_config_actual: SpriteConfig;
     {
         // Collect raw image paths in asset order
         let mut raw_paths: Vec<std::path::PathBuf> = Vec::with_capacity(assets.len());
@@ -337,7 +433,7 @@ async fn cmd_sync_cardano(
             },
         )?;
 
-        sprite_config = detected_config;
+        sprite_config_actual = detected_config;
 
         let total_size: u64 = sheets.iter().map(|s| s.file_size).sum();
         println!(
@@ -356,7 +452,7 @@ async fn cmd_sync_cardano(
     }
 
     // Generate HCF bundles from raw images
-    println!("\n[5/5] Generating HCF bundles...");
+    println!("\n[6/6] Generating HCF bundles...");
     let hcf_result = {
         // Collect raw image paths in asset order (same as sprites)
         let raw_paths: Vec<std::path::PathBuf> = assets
@@ -398,9 +494,8 @@ async fn cmd_sync_cardano(
         result
     };
 
-    // Write collection.bin with all metadata
-    println!("\nWriting collection.bin...");
-    let collection_bin_path = pipeline.dirs.root.join("collection.bin");
+    // Write collection.bin pass 2 (with actual HCF locations and sprite config)
+    println!("\nWriting collection.bin (pass 2 - final with HCF)...");
     {
         // Create sources section
         let sources = SourcesSection::new(vec![SourceMetadata {
@@ -413,11 +508,26 @@ async fn cmd_sync_cardano(
                 .as_secs() as u32,
         }]);
 
-        // HCF metadata
+        // Detect image format from first raw image
+        let image_format = assets
+            .first()
+            .and_then(|a| pipeline.raw_exists(&a.encoded_name))
+            .and_then(|p| p.extension().map(|e| e.to_owned()))
+            .and_then(|ext| ext.to_str().map(|s| s.to_lowercase()))
+            .map(|ext| match ext.as_str() {
+                "jpg" | "jpeg" => ImageFormat::Jpeg,
+                "png" => ImageFormat::Png,
+                "webp" => ImageFormat::WebP,
+                "avif" => ImageFormat::Avif,
+                _ => ImageFormat::WebP,
+            })
+            .unwrap_or(ImageFormat::WebP);
+
+        // HCF metadata with actual values
         let hcf_metadata = HcfMetadata {
             shard_size: pipeline.config.hcf_shard_size as u32,
             shard_count: hcf_result.shards.len() as u16,
-            image_format: ImageFormat::WebP,
+            image_format,
             max_dimension: 2048,
         };
 
@@ -437,15 +547,15 @@ async fn cmd_sync_cardano(
             writer.add_trait(trait_name, &value_counts)?;
         }
 
-        // Calculate sprite locations using detected config
-        let thumbs_per_sheet = sprite_config.thumbs_per_sheet();
+        // Calculate sprite locations using actual detected config
+        let thumbs_per_sheet = sprite_config_actual.thumbs_per_sheet();
 
         // Add tokens
         for (idx, asset) in assets.iter().enumerate() {
             let sheet = (idx as u32) / thumbs_per_sheet;
             let pos_in_sheet = (idx as u32) % thumbs_per_sheet;
-            let col = pos_in_sheet % sprite_config.grid_columns;
-            let row = pos_in_sheet / sprite_config.grid_columns;
+            let col = pos_in_sheet % sprite_config_actual.grid_columns;
+            let row = pos_in_sheet / sprite_config_actual.grid_columns;
 
             let sprite = SpriteLocation {
                 sheet: sheet as u16,
@@ -470,10 +580,10 @@ async fn cmd_sync_cardano(
                 source_index: None,
             };
 
-            writer.add_token(token);
+            writer.add_token(token)?;
         }
 
-        // Write with HCF locations
+        // Write with actual HCF locations
         writer.write_to_file(&collection_bin_path, &hcf_result.locations)?;
 
         let file_size = std::fs::metadata(&collection_bin_path)?.len();
@@ -485,20 +595,20 @@ async fn cmd_sync_cardano(
         );
         println!(
             "  Sprites: {}x{} cells, {}x{} grid, {} per sheet",
-            sprite_config.thumb_width,
-            sprite_config.thumb_height,
-            sprite_config.grid_columns,
-            sprite_config.grid_rows,
-            sprite_config.thumbs_per_sheet()
+            sprite_config_actual.thumb_width,
+            sprite_config_actual.thumb_height,
+            sprite_config_actual.grid_columns,
+            sprite_config_actual.grid_rows,
+            sprite_config_actual.thumbs_per_sheet()
         );
         tracing::info!(
-            "Wrote collection.bin: {} bytes, {} tokens, sprite config: {}x{} @ {}x{}",
+            "Wrote collection.bin pass 2: {} bytes, {} tokens, sprite config: {}x{} @ {}x{}",
             file_size,
             assets.len(),
-            sprite_config.thumb_width,
-            sprite_config.thumb_height,
-            sprite_config.grid_columns,
-            sprite_config.grid_rows
+            sprite_config_actual.thumb_width,
+            sprite_config_actual.thumb_height,
+            sprite_config_actual.grid_columns,
+            sprite_config_actual.grid_rows
         );
     }
 

@@ -85,6 +85,7 @@ pub enum ImageFormat {
     WebP = 0,
     Png = 1,
     Avif = 2,
+    Jpeg = 3,
 }
 
 impl ImageFormat {
@@ -93,6 +94,7 @@ impl ImageFormat {
             0 => Some(ImageFormat::WebP),
             1 => Some(ImageFormat::Png),
             2 => Some(ImageFormat::Avif),
+            3 => Some(ImageFormat::Jpeg),
             _ => None,
         }
     }
@@ -102,6 +104,16 @@ impl ImageFormat {
             ImageFormat::WebP => "webp",
             ImageFormat::Png => "png",
             ImageFormat::Avif => "avif",
+            ImageFormat::Jpeg => "jpg",
+        }
+    }
+
+    pub fn content_type(self) -> &'static str {
+        match self {
+            ImageFormat::WebP => "image/webp",
+            ImageFormat::Png => "image/png",
+            ImageFormat::Avif => "image/avif",
+            ImageFormat::Jpeg => "image/jpeg",
         }
     }
 }

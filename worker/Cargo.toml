@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 # Internal crates
 viewer-format = { path = "../crates/format" }
+viewer-binary = { path = "../crates/binary" }
 
 # Cloudflare Workers (via worker_stack)
 worker = "*"

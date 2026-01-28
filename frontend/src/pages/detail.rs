@@ -1,4 +1,4 @@
-use crate::{CollectionCache, TokenInfo, TraitInfo, collection_url, fetch_collection};
+use crate::{CollectionCache, HcfInfo, TokenInfo, TraitInfo, collection_url, fetch_collection, fetch_hcf_image};
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
@@ -77,6 +77,7 @@ pub fn DetailPage() -> impl IntoView {
                                             prev_token=prev_token
                                             next_token=next_token
                                             traits=collection.traits.clone()
+                                            hcf=collection.hcf.clone()
                                         />
                                     }.into_any()
                                 }
@@ -175,11 +176,8 @@ fn TokenDetail(
     prev_token: Option<TokenInfo>,
     next_token: Option<TokenInfo>,
     traits: Vec<TraitInfo>,
+    hcf: Option<HcfInfo>,
 ) -> impl IntoView {
-    // TODO: Fetch full image from HCF - for now use a placeholder or sprite
-    // The HCF format needs a worker to extract individual images
-    // For now, we could potentially show the sprite larger or add HCF support later
-
     let back_url = format!("/{slug}#token-{}", token.index);
     let prev_url = prev_token
         .as_ref()
@@ -201,8 +199,29 @@ fn TokenDetail(
         0.0
     };
 
-    // Track image loading state
-    let (is_loading, _set_is_loading) = signal(true);
+    // Track image loading state and URL
+    let (is_loading, set_is_loading) = signal(true);
+    let (full_image_url, set_full_image_url) = signal(None::<String>);
+
+    // Fetch full image from HCF if available
+    if let (Some(hcf_info), Some(location)) = (hcf.clone(), token.hcf_location.clone()) {
+        let slug_for_fetch = slug.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match fetch_hcf_image(&slug_for_fetch, &hcf_info, &location).await {
+                Ok(url) => {
+                    set_full_image_url.set(Some(url));
+                    set_is_loading.set(false);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to fetch HCF image: {}", e);
+                    set_is_loading.set(false);
+                }
+            }
+        });
+    } else {
+        // No HCF, not loading
+        set_is_loading.set(false);
+    }
 
     // Swipe/drag detection for mobile navigation
     let (pointer_start_x, set_pointer_start_x) = signal(0.0f64);
@@ -252,28 +271,45 @@ fn TokenDetail(
         }
     };
 
-    // For now, show the sprite sheet image as a placeholder
-    // TODO: Add HCF image extraction
+    // Sprite as fallback/placeholder while loading
     let sprite_url = collection_url(&slug, &format!("sprites/{:04}.webp", token.sprite_sheet));
     let sprite_style = format!(
         "background-image: url('{}'); --sprite-col: {}; --sprite-row: {};",
         sprite_url, token.sprite_x, token.sprite_y
     );
 
+    let token_name = token.name.clone();
+
     view! {
         <div class="tweakpane-view">
-            // Image viewport - using sprite for now
+            // Image viewport
             <div
                 class="image-viewport"
                 on:pointerdown=on_pointer_down
                 on:pointerup=on_pointer_up
             >
-                <div
-                    class="detail-sprite"
-                    style=sprite_style
-                    role="img"
-                    aria-label=format!("NFT {}", token.name)
-                ></div>
+                {move || {
+                    if let Some(url) = full_image_url.get() {
+                        // Show full resolution image
+                        view! {
+                            <img
+                                class="detail-image"
+                                src=url
+                                alt=format!("NFT {}", token_name)
+                            />
+                        }.into_any()
+                    } else {
+                        // Show sprite as fallback/placeholder
+                        view! {
+                            <div
+                                class="detail-sprite"
+                                style=sprite_style.clone()
+                                role="img"
+                                aria-label=format!("NFT {}", token_name)
+                            ></div>
+                        }.into_any()
+                    }
+                }}
             </div>
 
             // Floating panel

@@ -415,14 +415,13 @@ a {
     .nft-card-sprite {
         width: 100%;
         aspect-ratio: 1;
-        // Sprite sheet is 10x10, so background is 10x the card size
-        background-size: 1000% 1000%;
+        // 4x4 sprite sheet - background is 4x the card size (400%)
+        background-size: 400% 400%;
         background-repeat: no-repeat;
         display: block;
-        // Position using CSS custom properties from inline style
-        // Each cell is 10% of the background, so multiply col/row by 11.111% (100/9)
-        background-position: calc(var(--sprite-col, 0) * 11.1111%)
-            calc(var(--sprite-row, 0) * 11.1111%);
+        // Position: col/row 0-3 maps to 0%, 33.333%, 66.666%, 100%
+        background-position: calc(var(--sprite-col, 0) * 33.3333%)
+            calc(var(--sprite-row, 0) * 33.3333%);
     }
 
     .nft-card-info {
@@ -789,5 +788,96 @@ a {
 
     h2 {
         margin-bottom: 0.5rem;
+    }
+}
+
+// Debug page
+.debug-page {
+    padding: 2rem;
+    font-family: "SF Mono", Monaco, "Courier New", monospace;
+    max-width: 1400px;
+    margin: 0 auto;
+
+    h1 {
+        margin-bottom: 2rem;
+        color: var(--text-primary);
+    }
+
+    .debug-section {
+        margin-bottom: 2rem;
+
+        h2 {
+            margin-bottom: 1rem;
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+        }
+    }
+
+    .debug-table {
+        border-collapse: collapse;
+        width: 100%;
+        background: var(--bg-secondary);
+        border-radius: 4px;
+        overflow: hidden;
+
+        th,
+        td {
+            padding: 0.5rem 1rem;
+            border: 1px solid var(--border);
+            text-align: left;
+        }
+
+        th {
+            background: var(--bg-tertiary);
+            font-weight: 600;
+        }
+
+        td.asset-id {
+            font-size: 0.7rem;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        td.bitmap {
+            font-size: 0.7rem;
+            max-width: 150px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+    }
+
+    .debug-traits {
+        list-style: disc;
+        padding-left: 1.5rem;
+
+        li {
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+
+            strong {
+                color: var(--text-primary);
+            }
+        }
+    }
+
+    .debug-sprite-preview {
+        width: 64px;
+        height: 64px;
+        background-size: 256px 256px;
+        background-repeat: no-repeat;
+        border-radius: 4px;
+    }
+
+    .debug-hex {
+        background: var(--bg-secondary);
+        padding: 1rem;
+        border-radius: 4px;
+        overflow-x: auto;
+        font-size: 0.8rem;
+        line-height: 1.8;
+        color: var(--text-secondary);
     }
 }

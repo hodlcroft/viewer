@@ -1,12 +1,12 @@
 //! Binary format header.
 //!
-//! The header is always 64 bytes and contains format metadata plus offsets to all sections.
+//! The header is 128 bytes and contains format metadata plus offsets to all sections.
 //! Reserved bytes at the end allow for future expansion without changing header size.
 
 use crate::{BitmapSize, HcfIndexSize, MAGIC, VERSION};
 
 /// Fixed header size in bytes.
-pub const HEADER_SIZE: usize = 64;
+pub const HEADER_SIZE: usize = 128;
 
 /// Feature flag: Collection has multiple sources, tokens include source_index field.
 pub const FLAG_MULTI_SOURCE: u16 = 1 << 0;
@@ -53,8 +53,11 @@ pub struct Header {
     pub hcf_index_offset: u32,
     /// Offset to sources section
     pub sources_offset: u32,
+    /// Offset to asset ID index (array of u16 string refs, one per token)
+    pub asset_id_index_offset: u32,
+
     /// Reserved for future use (must be zero)
-    pub reserved: [u8; 12],
+    pub reserved: [u8; 72],
 }
 
 impl Header {
@@ -89,7 +92,8 @@ impl Header {
             hcf_metadata_offset: 0,
             hcf_index_offset: 0,
             sources_offset: 0,
-            reserved: [0u8; 12],
+            asset_id_index_offset: 0,
+            reserved: [0u8; 72],
         }
     }
 
@@ -129,15 +133,16 @@ impl Header {
         buf[40..44].copy_from_slice(&self.hcf_metadata_offset.to_le_bytes());
         buf[44..48].copy_from_slice(&self.hcf_index_offset.to_le_bytes());
         buf[48..52].copy_from_slice(&self.sources_offset.to_le_bytes());
-        // buf[52..64] reserved (already zero)
+        buf[52..56].copy_from_slice(&self.asset_id_index_offset.to_le_bytes());
+        // buf[56..128] reserved (already zero)
 
         buf
     }
 
     /// Deserialize header from bytes.
     pub fn from_bytes(buf: &[u8; HEADER_SIZE]) -> Self {
-        let mut reserved = [0u8; 12];
-        reserved.copy_from_slice(&buf[52..64]);
+        let mut reserved = [0u8; 72];
+        reserved.copy_from_slice(&buf[56..128]);
 
         Self {
             magic: [buf[0], buf[1], buf[2], buf[3]],
@@ -157,6 +162,7 @@ impl Header {
             hcf_metadata_offset: u32::from_le_bytes([buf[40], buf[41], buf[42], buf[43]]),
             hcf_index_offset: u32::from_le_bytes([buf[44], buf[45], buf[46], buf[47]]),
             sources_offset: u32::from_le_bytes([buf[48], buf[49], buf[50], buf[51]]),
+            asset_id_index_offset: u32::from_le_bytes([buf[52], buf[53], buf[54], buf[55]]),
             reserved,
         }
     }
@@ -195,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_header_size() {
-        assert_eq!(HEADER_SIZE, 64);
+        assert_eq!(HEADER_SIZE, 128);
         let header = Header::new(0, 0, BitmapSize::U64, HcfIndexSize::U32U16, 1);
         assert_eq!(header.to_bytes().len(), HEADER_SIZE);
     }
@@ -206,9 +212,20 @@ mod tests {
         let bytes = header.to_bytes();
 
         // Reserved bytes should be zero
-        assert_eq!(&bytes[52..64], &[0u8; 12]);
+        assert_eq!(&bytes[56..128], &[0u8; 72]);
 
         let parsed = Header::from_bytes(&bytes);
-        assert_eq!(parsed.reserved, [0u8; 12]);
+        assert_eq!(parsed.reserved, [0u8; 72]);
+    }
+
+    #[test]
+    fn test_asset_id_index_offset() {
+        let mut header = Header::new(100, 5, BitmapSize::U64, HcfIndexSize::U32U16, 1);
+        header.asset_id_index_offset = 12345;
+
+        let bytes = header.to_bytes();
+        let parsed = Header::from_bytes(&bytes);
+
+        assert_eq!(parsed.asset_id_index_offset, 12345);
     }
 }

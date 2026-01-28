@@ -73,14 +73,33 @@ pub struct TokenData {
     pub source_index: Option<u8>,
 }
 
+/// Internal token data with resolved string references.
+#[derive(Debug, Clone)]
+struct ResolvedToken {
+    /// Name string reference
+    name_ref: u16,
+    /// Asset ID stored as raw bytes (not in string table - they're unique anyway)
+    asset_id: String,
+    /// Trait values as (trait_index, value_index) pairs
+    traits: Vec<(u8, u8)>,
+    /// Rarity rank (1-based)
+    rarity_rank: u16,
+    /// Rarity score (multiplied by 100 for fixed-point)
+    rarity_score: u16,
+    /// Sprite location
+    sprite: SpriteLocation,
+    /// Source index (for multi-source collections)
+    source_index: Option<u8>,
+}
+
 /// Builder for collection.bin files.
 pub struct CollectionWriter {
     /// String table builder
     strings: StringTableBuilder,
     /// Trait schema builder
     traits: TraitSchemaBuilder,
-    /// Token data
-    tokens: Vec<TokenData>,
+    /// Token data with resolved string references
+    tokens: Vec<ResolvedToken>,
     /// Sources section
     sources: SourcesSection,
     /// HCF metadata
@@ -133,8 +152,24 @@ impl CollectionWriter {
     }
 
     /// Add a token.
-    pub fn add_token(&mut self, token: TokenData) {
-        self.tokens.push(token);
+    ///
+    /// Returns an error if the name cannot be added to the string table.
+    pub fn add_token(&mut self, token: TokenData) -> Result<(), WriterError> {
+        // Add name to string table (with high bit set to indicate custom name)
+        let name_ref = self.strings.add(&token.name)?.0 | 0x8000;
+
+        // Asset ID is stored separately (not in string table - they're unique anyway)
+        self.tokens.push(ResolvedToken {
+            name_ref,
+            asset_id: token.asset_id,
+            traits: token.traits,
+            rarity_rank: token.rarity_rank,
+            rarity_score: token.rarity_score,
+            sprite: token.sprite,
+            source_index: token.source_index,
+        });
+
+        Ok(())
     }
 
     /// Write the collection to a file.
@@ -155,6 +190,29 @@ impl CollectionWriter {
         let file = std::fs::File::create(path)?;
         let mut writer = std::io::BufWriter::new(file);
         self.write(&mut writer, hcf_locations)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    /// Write the collection to a file without HCF locations (pass 1).
+    ///
+    /// This writes a valid collection.bin with placeholder HCF locations (0, 0).
+    /// Use this to establish deterministic ordering before sprite/HCF generation.
+    /// Call `write_to_file` later with actual HCF locations for the final version.
+    pub fn write_to_file_without_hcf(&self, path: &Path) -> Result<(), WriterError> {
+        // Create placeholder locations with zeros
+        let placeholder_locations: Vec<ImageLocation> = (0..self.tokens.len())
+            .map(|_| ImageLocation {
+                global_offset: 0,
+                length: 0,
+                shard_index: 0,
+                shard_offset: 0,
+            })
+            .collect();
+
+        let file = std::fs::File::create(path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        self.write(&mut writer, &placeholder_locations)?;
         writer.flush()?;
         Ok(())
     }
@@ -209,6 +267,10 @@ impl CollectionWriter {
         let sources_offset = hcf_index_offset + hcf_index_bytes.len() as u32;
         let sources_bytes = self.sources.to_bytes();
 
+        // Asset ID index section (array of u16 string refs, one per token)
+        let asset_id_index_offset = sources_offset + sources_bytes.len() as u32;
+        let asset_id_index_bytes = self.build_asset_id_index();
+
         // Build header
         let mut header = Header::new(
             self.tokens.len() as u32,
@@ -226,6 +288,7 @@ impl CollectionWriter {
         header.hcf_metadata_offset = hcf_metadata_offset;
         header.hcf_index_offset = hcf_index_offset;
         header.sources_offset = sources_offset;
+        header.asset_id_index_offset = asset_id_index_offset;
 
         // Write all sections
         writer.write_all(&header.to_bytes())?;
@@ -238,6 +301,7 @@ impl CollectionWriter {
         writer.write_all(&hcf_metadata_bytes)?;
         writer.write_all(&hcf_index_bytes)?;
         writer.write_all(&sources_bytes)?;
+        writer.write_all(&asset_id_index_bytes)?;
 
         Ok(())
     }
@@ -255,7 +319,7 @@ impl CollectionWriter {
                 sprite_y: token.sprite.y,
                 rarity_rank: token.rarity_rank,
                 rarity_score: token.rarity_score,
-                name_ref: 0, // Would be resolved from string table
+                name_ref: token.name_ref,
             };
 
             // Write fixed fields
@@ -314,6 +378,32 @@ impl CollectionWriter {
 
         bitmap
     }
+
+    /// Build the asset ID index section.
+    ///
+    /// Format: [offset_table: u32 * token_count][string_data]
+    /// Each offset points to a null-terminated string in the string_data section.
+    /// This avoids bloating the main string table with unique asset IDs.
+    fn build_asset_id_index(&self) -> Vec<u8> {
+        // First pass: calculate offsets and total size
+        let offset_table_size = self.tokens.len() * 4; // u32 per token
+        let mut string_data = Vec::new();
+        let mut offsets = Vec::with_capacity(self.tokens.len());
+
+        for token in &self.tokens {
+            offsets.push((offset_table_size + string_data.len()) as u32);
+            string_data.extend_from_slice(token.asset_id.as_bytes());
+            string_data.push(0); // null terminator
+        }
+
+        // Build final buffer: offsets followed by string data
+        let mut bytes = Vec::with_capacity(offset_table_size + string_data.len());
+        for offset in offsets {
+            bytes.extend_from_slice(&offset.to_le_bytes());
+        }
+        bytes.extend_from_slice(&string_data);
+        bytes
+    }
 }
 
 #[cfg(test)]
@@ -368,7 +458,7 @@ mod tests {
             source_index: None,
         };
 
-        writer.add_token(token);
+        writer.add_token(token).unwrap();
 
         // HCF locations are provided separately
         let hcf_locations = vec![ImageLocation {

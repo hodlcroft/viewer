@@ -42,7 +42,10 @@ pub use header::{FLAG_MULTI_SOURCE, HEADER_SIZE, Header};
 pub use sources::{SourceMetadata, SourcesSection};
 pub use sprites::{SPRITE_METADATA_SIZE, SpriteFormat, SpriteMetadata};
 pub use strings::{StringRef, StringTable, StringTableBuilder};
-pub use tokens::{TOKEN_FIXED_SIZE, TOKEN_FIXED_SIZE_MULTI_SOURCE, TokenEntry, write_hcf_location};
+pub use tokens::{
+    TOKEN_FIXED_SIZE, TOKEN_FIXED_SIZE_MULTI_SOURCE, TokenEntry, read_hcf_location,
+    write_hcf_location,
+};
 pub use traits::{TraitDef, TraitSchema, TraitSchemaBuilder, ValueDef};
 
 /// Magic bytes identifying a collection.bin file
