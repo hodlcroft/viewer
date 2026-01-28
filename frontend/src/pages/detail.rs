@@ -2,6 +2,53 @@ use crate::{CollectionCache, HcfInfo, TokenInfo, TraitInfo, collection_url, fetc
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Tracks active loading requests to prevent panics on component disposal
+#[derive(Clone)]
+struct LoadingTracker {
+    /// Current request ID (incremented on each new request)
+    current_request_id: Arc<AtomicU64>,
+    /// Pending request count
+    pending_count: RwSignal<usize>,
+}
+
+impl LoadingTracker {
+    fn new() -> Self {
+        Self {
+            current_request_id: Arc::new(AtomicU64::new(0)),
+            pending_count: RwSignal::new(0),
+        }
+    }
+
+    /// Start a new loading request, returns the request ID
+    fn start_request(&self) -> u64 {
+        let id = self.current_request_id.fetch_add(1, Ordering::SeqCst) + 1;
+        self.pending_count.update(|c| *c += 1);
+        id
+    }
+
+    /// Complete a request - only updates state if request ID matches current
+    fn complete_request(&self, request_id: u64) {
+        let current = self.current_request_id.load(Ordering::SeqCst);
+        if request_id == current {
+            // This was the latest request, decrement pending count
+            self.pending_count.update(|c| *c = c.saturating_sub(1));
+        }
+        // Otherwise, this was a stale request - ignore it
+    }
+
+    /// Check if there are any pending requests
+    fn is_loading(&self) -> bool {
+        self.pending_count.get() > 0
+    }
+
+    /// Get the current request ID (for checking if a request is stale)
+    fn current_id(&self) -> u64 {
+        self.current_request_id.load(Ordering::SeqCst)
+    }
+}
 
 #[component]
 pub fn DetailPage() -> impl IntoView {
@@ -10,6 +57,10 @@ pub fn DetailPage() -> impl IntoView {
 
     let slug = move || params.read().get("slug").unwrap_or_default();
     let id = move || params.read().get("id").unwrap_or_default();
+
+    // Create loading tracker at DetailPage level so it persists across token changes
+    let loading_tracker = LoadingTracker::new();
+    provide_context(loading_tracker);
 
     // Fetch collection data
     let collection_resource = LocalResource::new(move || {
@@ -218,43 +269,40 @@ fn TokenDetail(
     // NodeRef to the main image element - we'll manipulate it directly
     let img_ref = NodeRef::<leptos::html::Img>::new();
 
-    // Track loading state for spinner
-    let (is_loading, set_is_loading) = signal(true);
+    // Get loading tracker from context (persists across token navigations)
+    let loading_tracker = expect_context::<LoadingTracker>();
 
     // Fetch full image from HCF if available
     if let (Some(hcf_info), Some(location)) = (hcf.clone(), token.hcf_location.clone()) {
         let slug_for_fetch = slug.clone();
-
-        // Clone img_ref for the async block
         let img_ref_clone = img_ref.clone();
+        let tracker = loading_tracker.clone();
+
+        // Start tracking this request
+        let request_id = tracker.start_request();
 
         wasm_bindgen_futures::spawn_local(async move {
             match fetch_hcf_image(&slug_for_fetch, &hcf_info, &location).await {
                 Ok(blob_url) => {
-                    tracing::info!(blob_url = %blob_url, "Got blob URL, setting on img element");
-
-                    // Directly set src and show image (if component still mounted)
-                    if let Some(img) = img_ref_clone.get() {
-                        // Revoke previous blob URL if any
-                        let old_src = img.src();
-                        if old_src.starts_with("blob:") {
-                            let _ = web_sys::Url::revoke_object_url(&old_src);
+                    // Check if this request is still current before updating DOM
+                    if tracker.current_id() == request_id {
+                        if let Some(img) = img_ref_clone.get() {
+                            img.set_src(&blob_url);
+                            let _ = img.class_list().add_1("loaded");
                         }
-                        img.set_src(&blob_url);
-                        let _ = img.class_list().add_1("loaded");
-                        // Only update signal if component still exists
-                        let _ = set_is_loading.try_set(false);
                     }
+                    // Always complete the request to update pending count
+                    tracker.complete_request(request_id);
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch HCF image: {}", e);
-                    let _ = set_is_loading.try_set(false);
+                    tracker.complete_request(request_id);
                 }
             }
         });
-    } else {
-        set_is_loading.set(false);
     }
+
+    let loading_tracker_for_view = loading_tracker.clone();
 
     let navigate = use_navigate();
 
@@ -325,7 +373,7 @@ fn TokenDetail(
                     <span class="tp-title">{token.name.clone()}</span>
                     <div
                         class="tp-header-spinner"
-                        class:hidden=move || !is_loading.try_get().unwrap_or(false)
+                        class:hidden=move || !loading_tracker_for_view.is_loading()
                     >
                         <div class="spinner"></div>
                     </div>
