@@ -4,20 +4,18 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "🔨 Building preview-viewer worker..."
+echo "Building viewer worker..."
 
 # Build frontend first
-echo "📦 Building frontend..."
-cd frontend
-trunk build --release
-cd ..
+echo "Building frontend..."
+cd ../frontend
+trunk build --release --dist ../worker/dist
+cd ../worker
 
-# Frontend outputs directly to ../dist (see frontend/trunk.toml)
-# So dist is already created by trunk build
-echo "📁 Frontend assets built to dist/"
+echo "Frontend assets built to dist/"
 
 # Build worker
-echo "🦀 Building worker..."
+echo "Building worker..."
 worker-build --release
 
-echo "✅ Build complete!"
+echo "Build complete!"

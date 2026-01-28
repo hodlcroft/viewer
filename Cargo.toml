@@ -7,6 +7,8 @@ members = [
     "crates/ingest",
     "crates/cli",
     "worker",
+]
+exclude = [
     "frontend",
 ]
 
@@ -57,7 +59,7 @@ leptos = "0.8"
 leptos_router = "0.8"
 leptos_meta = "0.8"
 web-sys = "0.3"
-wasm-bindgen = "0.2"
+wasm-bindgen = "*"
 gloo-timers = "0.3"
 js-sys = "0.3"
 

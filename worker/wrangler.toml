@@ -1,6 +1,6 @@
-name = "preview-viewer"
+name = "viewer"
 main = "build/worker/shim.mjs"
-compatibility_date = "2025-08-31"
+compatibility_date = "2025-01-01"
 routes = [
     { pattern = "viewer.hodlcroft.com", custom_domain = true },
 ]
@@ -12,19 +12,10 @@ enabled = true
 [build]
 command = "./build.sh"
 
-[[kv_namespaces]]
-id = "fadcdcfa00cc473ab004209640a83685"
-binding = "CACHE"
-
-# R2 bucket for compositor generated collections
-[[r2_buckets]]
-binding = "STORAGE"
-bucket_name = "hodlcroft"
-
 # Static assets configuration for frontend
 [assets]
 directory = "./dist/"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-# Only run worker for API and health routes, let static assets handle the rest
-run_worker_first = ["/api/*", "/health"]
+# Only run worker for health check
+run_worker_first = ["/health"]
