@@ -233,7 +233,7 @@ fn TokenDetail(
                 Ok(blob_url) => {
                     tracing::info!(blob_url = %blob_url, "Got blob URL, setting on img element");
 
-                    // Directly set src and show image
+                    // Directly set src and show image (if component still mounted)
                     if let Some(img) = img_ref_clone.get() {
                         // Revoke previous blob URL if any
                         let old_src = img.src();
@@ -242,12 +242,13 @@ fn TokenDetail(
                         }
                         img.set_src(&blob_url);
                         let _ = img.class_list().add_1("loaded");
+                        // Only update signal if component still exists
+                        let _ = set_is_loading.try_set(false);
                     }
-                    set_is_loading.set(false);
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch HCF image: {}", e);
-                    set_is_loading.set(false);
+                    let _ = set_is_loading.try_set(false);
                 }
             }
         });
@@ -255,61 +256,13 @@ fn TokenDetail(
         set_is_loading.set(false);
     }
 
-    // Swipe/drag detection for mobile navigation
-    let (pointer_start_x, set_pointer_start_x) = signal(0.0f64);
-    let (pointer_start_y, set_pointer_start_y) = signal(0.0f64);
-    let (is_dragging, set_is_dragging) = signal(false);
-
     let navigate = use_navigate();
-    let prev_url_for_swipe = prev_url.clone();
-    let next_url_for_swipe = next_url.clone();
-    let prev_url_for_keys = prev_url.clone();
-    let next_url_for_keys = next_url.clone();
-
-    let on_pointer_down = move |ev: web_sys::PointerEvent| {
-        set_pointer_start_x.set(ev.client_x() as f64);
-        set_pointer_start_y.set(ev.client_y() as f64);
-        set_is_dragging.set(true);
-    };
-
-    let on_pointer_up = {
-        let navigate = navigate.clone();
-        let prev_url = prev_url_for_swipe.clone();
-        let next_url = next_url_for_swipe.clone();
-
-        move |ev: web_sys::PointerEvent| {
-            if !is_dragging.get() {
-                return;
-            }
-            set_is_dragging.set(false);
-
-            let end_x = ev.client_x() as f64;
-            let end_y = ev.client_y() as f64;
-            let dx = end_x - pointer_start_x.get();
-            let dy = end_y - pointer_start_y.get();
-
-            // Only trigger if horizontal swipe > 50px and greater than vertical movement
-            if dx.abs() > 50.0 && dx.abs() > dy.abs() {
-                if dx > 0.0 {
-                    // Swipe right → previous
-                    if let Some(ref url) = prev_url {
-                        navigate(url, Default::default());
-                    }
-                } else {
-                    // Swipe left → next
-                    if let Some(ref url) = next_url {
-                        navigate(url, Default::default());
-                    }
-                }
-            }
-        }
-    };
 
     // Keyboard navigation
     let on_keydown = {
         let navigate = navigate.clone();
-        let prev_url = prev_url_for_keys;
-        let next_url = next_url_for_keys;
+        let prev_url = prev_url.clone();
+        let next_url = next_url.clone();
 
         move |ev: web_sys::KeyboardEvent| {
             match ev.key().as_str() {
@@ -347,11 +300,7 @@ fn TokenDetail(
             on:keydown=on_keydown
         >
             // Image viewport
-            <div
-                class="image-viewport"
-                on:pointerdown=on_pointer_down
-                on:pointerup=on_pointer_up
-            >
+            <div class="image-viewport">
                 // Always show sprite as background placeholder
                 <div
                     class="detail-sprite"
@@ -360,7 +309,8 @@ fn TokenDetail(
                     aria-label=format!("NFT {} (loading)", token_name_for_sprite)
                 ></div>
 
-                // Full-res image - src is set directly via NodeRef when data URL is ready
+                // Full-res image - src is set directly via NodeRef when blob URL is ready
+                // Hidden initially (no src), shown when loaded class is added
                 <img
                     class="detail-image"
                     node_ref=img_ref
@@ -375,7 +325,7 @@ fn TokenDetail(
                     <span class="tp-title">{token.name.clone()}</span>
                     <div
                         class="tp-header-spinner"
-                        class:hidden=move || !is_loading.get()
+                        class:hidden=move || !is_loading.try_get().unwrap_or(false)
                     >
                         <div class="spinner"></div>
                     </div>
