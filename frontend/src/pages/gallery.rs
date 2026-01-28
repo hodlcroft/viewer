@@ -1,6 +1,6 @@
 use crate::{CollectionCache, InfiniteGrid, TraitInfo, fetch_collection};
 use leptos::prelude::*;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_params_map, use_query_map};
 use std::collections::HashMap;
 
 /// Active filters: trait_name -> value
@@ -120,11 +120,29 @@ impl Default for FilterContext {
 #[component]
 pub fn GalleryPage() -> impl IntoView {
     let params = use_params_map();
+    let query = use_query_map();
     let cache = expect_context::<CollectionCache>();
 
     // Provide filter context for this gallery
     let filter_ctx = FilterContext::new();
     provide_context(filter_ctx);
+
+    // Parse initial filter from URL query param: ?filter=Trait:Value
+    Effect::new(move |_| {
+        if let Some(filter_param) = query.read().get("filter") {
+            if let Some((trait_name, value)) = filter_param.split_once(':') {
+                // URL decode the values
+                let trait_name = urlencoding::decode(trait_name)
+                    .map(|s| s.into_owned())
+                    .unwrap_or_else(|_| trait_name.to_string());
+                let value = urlencoding::decode(value)
+                    .map(|s| s.into_owned())
+                    .unwrap_or_else(|_| value.to_string());
+
+                filter_ctx.add_filter(trait_name, value);
+            }
+        }
+    });
 
     let slug = move || params.read().get("slug").unwrap_or_default();
 

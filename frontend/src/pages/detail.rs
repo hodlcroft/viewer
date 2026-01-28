@@ -3,6 +3,24 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
+/// Context for persisting the displayed image URL across navigations
+/// This is stored at the DetailPage level so it survives TokenDetail re-renders
+#[derive(Clone, Debug, Default)]
+pub struct DisplayedImageContext {
+    /// The last fully loaded image URL - persists across token navigations
+    pub url: RwSignal<Option<String>>,
+}
+
+/// Image loading state for the detail view
+/// Tracks the pending image being loaded
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ImageState {
+    /// The pending image URL being loaded
+    pending_url: Option<String>,
+    /// Whether we're currently fetching from HCF
+    is_fetching: bool,
+}
+
 #[component]
 pub fn DetailPage() -> impl IntoView {
     let params = use_params_map();
@@ -10,6 +28,12 @@ pub fn DetailPage() -> impl IntoView {
 
     let slug = move || params.read().get("slug").unwrap_or_default();
     let id = move || params.read().get("id").unwrap_or_default();
+
+    // Create and provide the displayed image context - persists across token navigations
+    let displayed_image_ctx = DisplayedImageContext {
+        url: RwSignal::new(None),
+    };
+    provide_context(displayed_image_ctx);
 
     // Fetch collection data
     let collection_resource = LocalResource::new(move || {
@@ -144,8 +168,15 @@ fn trait_rarity_class(pct: f64) -> &'static str {
     }
 }
 
+/// Decoded trait with percentage
+struct DecodedTrait {
+    trait_name: String,
+    value: String,
+    percentage: f64,
+}
+
 /// Decode token traits from bitmap
-fn decode_token_traits(token: &TokenInfo, traits: &[TraitInfo]) -> Vec<(String, String, f64)> {
+fn decode_token_traits(token: &TokenInfo, traits: &[TraitInfo], total_tokens: u32) -> Vec<DecodedTrait> {
     let mut result = Vec::new();
 
     for trait_info in traits {
@@ -156,9 +187,16 @@ fn decode_token_traits(token: &TokenInfo, traits: &[TraitInfo]) -> Vec<(String, 
             if byte_idx < token.trait_bitmap.len() {
                 if token.trait_bitmap[byte_idx] & (1 << bit_idx) != 0 {
                     // Token has this trait value
-                    // Calculate percentage (count is per-value)
-                    let pct = value_info.count as f64; // We'd need total to calculate proper %
-                    result.push((trait_info.name.clone(), value_info.value.clone(), pct));
+                    let percentage = if total_tokens > 0 {
+                        (value_info.count as f64 / total_tokens as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    result.push(DecodedTrait {
+                        trait_name: trait_info.name.clone(),
+                        value: value_info.value.clone(),
+                        percentage,
+                    });
                 }
             }
         }
@@ -166,6 +204,8 @@ fn decode_token_traits(token: &TokenInfo, traits: &[TraitInfo]) -> Vec<(String, 
 
     result
 }
+
+
 
 #[component]
 fn TokenDetail(
@@ -190,7 +230,7 @@ fn TokenDetail(
     let has_next = next_url.is_some();
 
     // Decode traits from bitmap
-    let token_traits = decode_token_traits(&token, &traits);
+    let token_traits = decode_token_traits(&token, &traits, total_count as u32);
 
     let rarity_class = rarity_tier_class(token.rarity_rank, total_count);
     let percentile = if total_count > 0 {
@@ -199,29 +239,61 @@ fn TokenDetail(
         0.0
     };
 
-    // Track image loading state and URL
-    let (is_loading, set_is_loading) = signal(true);
-    let (full_image_url, set_full_image_url) = signal(None::<String>);
+    // Get the displayed image context (persists across token navigations)
+    let displayed_ctx = expect_context::<DisplayedImageContext>();
+
+    // Image loading state for pending image
+    let (image_state, set_image_state) = signal(ImageState {
+        is_fetching: true,
+        ..Default::default()
+    });
 
     // Fetch full image from HCF if available
     if let (Some(hcf_info), Some(location)) = (hcf.clone(), token.hcf_location.clone()) {
         let slug_for_fetch = slug.clone();
+
         wasm_bindgen_futures::spawn_local(async move {
             match fetch_hcf_image(&slug_for_fetch, &hcf_info, &location).await {
                 Ok(url) => {
-                    set_full_image_url.set(Some(url));
-                    set_is_loading.set(false);
+                    tracing::info!(blob_url = %url, "Setting pending URL for image");
+                    // Set the pending URL - displayed stays the same until img loads
+                    set_image_state.update(|state| {
+                        state.pending_url = Some(url);
+                        state.is_fetching = false;
+                    });
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch HCF image: {}", e);
-                    set_is_loading.set(false);
+                    set_image_state.update(|state| {
+                        state.is_fetching = false;
+                    });
                 }
             }
         });
     } else {
-        // No HCF, not loading
-        set_is_loading.set(false);
+        set_image_state.update(|state| {
+            state.is_fetching = false;
+        });
     }
+
+    // When pending image element loads, promote it to displayed
+    let on_pending_load = {
+        let displayed_url = displayed_ctx.url;
+        move |_| {
+            tracing::info!("Pending image onload fired");
+            // First, get the pending URL without modifying state
+            let pending = image_state.get().pending_url.clone();
+            if let Some(url) = pending {
+                tracing::info!(blob_url = %url, "Promoting pending image to displayed");
+                // Set the displayed URL first
+                displayed_url.set(Some(url));
+                // Then clear the pending URL
+                set_image_state.update(|state| {
+                    state.pending_url = None;
+                });
+            }
+        }
+    };
 
     // Swipe/drag detection for mobile navigation
     let (pointer_start_x, set_pointer_start_x) = signal(0.0f64);
@@ -231,6 +303,8 @@ fn TokenDetail(
     let navigate = use_navigate();
     let prev_url_for_swipe = prev_url.clone();
     let next_url_for_swipe = next_url.clone();
+    let prev_url_for_keys = prev_url.clone();
+    let next_url_for_keys = next_url.clone();
 
     let on_pointer_down = move |ev: web_sys::PointerEvent| {
         set_pointer_start_x.set(ev.client_x() as f64);
@@ -271,6 +345,31 @@ fn TokenDetail(
         }
     };
 
+    // Keyboard navigation
+    let on_keydown = {
+        let navigate = navigate.clone();
+        let prev_url = prev_url_for_keys;
+        let next_url = next_url_for_keys;
+
+        move |ev: web_sys::KeyboardEvent| {
+            match ev.key().as_str() {
+                "ArrowLeft" | "a" | "A" => {
+                    if let Some(ref url) = prev_url {
+                        ev.prevent_default();
+                        navigate(url, Default::default());
+                    }
+                }
+                "ArrowRight" | "d" | "D" => {
+                    if let Some(ref url) = next_url {
+                        ev.prevent_default();
+                        navigate(url, Default::default());
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+
     // Sprite as fallback/placeholder while loading
     let sprite_url = collection_url(&slug, &format!("sprites/{:04}.webp", token.sprite_sheet));
     let sprite_style = format!(
@@ -278,37 +377,68 @@ fn TokenDetail(
         sprite_url, token.sprite_x, token.sprite_y
     );
 
-    let token_name = token.name.clone();
+    let token_name_for_img = token.name.clone();
+    let token_name_for_sprite = token.name.clone();
 
     view! {
-        <div class="tweakpane-view">
+        <div
+            class="tweakpane-view"
+            tabindex="0"
+            on:keydown=on_keydown
+        >
             // Image viewport
             <div
                 class="image-viewport"
                 on:pointerdown=on_pointer_down
                 on:pointerup=on_pointer_up
             >
+                // Always show sprite as background placeholder
+                <div
+                    class="detail-sprite"
+                    style=sprite_style.clone()
+                    role="img"
+                    aria-label=format!("NFT {} (loading)", token_name_for_sprite)
+                ></div>
+
+                // Displayed image (the currently visible one - persisted in context)
                 {move || {
-                    if let Some(url) = full_image_url.get() {
-                        // Show full resolution image
+                    displayed_ctx.url.get().map(|url| view! {
+                        <img
+                            class="detail-image loaded"
+                            src=url
+                            alt=format!("NFT {}", token_name_for_img)
+                        />
+                    })
+                }}
+
+                // Pending image (loading in background, hidden until ready)
+                {move || {
+                    let state = image_state.get();
+                    let on_load = on_pending_load.clone();
+                    state.pending_url.clone().map(|url| {
+                        let on_load_for_ref = on_load.clone();
                         view! {
                             <img
-                                class="detail-image"
+                                class="detail-image pending"
                                 src=url
-                                alt=format!("NFT {}", token_name)
+                                alt=""
+                                on:load=on_load
+                                node_ref={
+                                    // Check if already loaded when element is created
+                                    let node_ref = NodeRef::<leptos::html::Img>::new();
+                                    Effect::new(move |_| {
+                                        if let Some(img) = node_ref.get() {
+                                            if img.complete() && img.natural_width() > 0 {
+                                                tracing::info!("Image already complete on mount");
+                                                on_load_for_ref(web_sys::Event::new("load").unwrap());
+                                            }
+                                        }
+                                    });
+                                    node_ref
+                                }
                             />
-                        }.into_any()
-                    } else {
-                        // Show sprite as fallback/placeholder
-                        view! {
-                            <div
-                                class="detail-sprite"
-                                style=sprite_style.clone()
-                                role="img"
-                                aria-label=format!("NFT {}", token_name)
-                            ></div>
-                        }.into_any()
-                    }
+                        }
+                    })
                 }}
             </div>
 
@@ -317,7 +447,13 @@ fn TokenDetail(
                 <div class="tp-header">
                     <span class="tp-back"><A href=back_url>"Gallery"</A></span>
                     <span class="tp-title">{token.name.clone()}</span>
-                    <div class="tp-header-spinner" class:hidden=move || !is_loading.get()>
+                    <div
+                        class="tp-header-spinner"
+                        class:hidden=move || {
+                            let state = image_state.get();
+                            !state.is_fetching && state.pending_url.is_none()
+                        }
+                    >
                         <div class="spinner"></div>
                     </div>
                 </div>
@@ -364,21 +500,20 @@ fn TokenDetail(
                 // Attributes
                 <div class="tp-section tp-attributes">
                     <div class="tp-section-title">"Attributes"</div>
-                    {token_traits.into_iter().map(|(trait_name, value, count)| {
+                    {token_traits.into_iter().map(|t| {
                         let filter_url = format!("/{slug}?filter={}:{}",
-                            urlencoding::encode(&trait_name),
-                            urlencoding::encode(&value)
+                            urlencoding::encode(&t.trait_name),
+                            urlencoding::encode(&t.value)
                         );
-                        // For now just show count, proper % would need total
-                        let display_count = format!("{} have this", count as u16);
+                        let trait_class = trait_rarity_class(t.percentage);
 
                         view! {
                             <div class="tp-row tp-trait">
-                                <span class="tp-label">{trait_name}</span>
+                                <span class="tp-label">{t.trait_name}</span>
                                 <div class="tp-trait-value">
                                     <A href=filter_url attr:class="tp-trait-link">
-                                        <span class="tp-value">{value}</span>
-                                        <span class="tp-count">{display_count}</span>
+                                        <span class={format!("tp-value {}", trait_class)}>{t.value}</span>
+                                        <span class={format!("tp-pct {}", trait_class)}>{format!("{:.1}%", t.percentage)}</span>
                                     </A>
                                 </div>
                             </div>

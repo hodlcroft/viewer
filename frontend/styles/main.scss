@@ -482,11 +482,42 @@ a {
     align-items: center;
     justify-content: center;
     background: var(--bg-primary);
+}
 
-    img {
-        max-width: 100%;
-        max-height: 100%;
-        object-fit: contain;
+// Sprite placeholder (background while loading)
+.detail-sprite {
+    position: absolute;
+    // Maintain 1:1 aspect ratio, fit within viewport
+    width: min(100vw, 100vh);
+    height: min(100vw, 100vh);
+    max-width: 100%;
+    max-height: 100%;
+    background-size: 400% 400%;
+    background-repeat: no-repeat;
+    background-position: calc(var(--sprite-col, 0) * 33.3333%)
+        calc(var(--sprite-row, 0) * 33.3333%);
+    // Blur to hide pixelation from upscaling
+    filter: blur(8px);
+    opacity: 0.6;
+}
+
+// Full-res detail image
+.detail-image {
+    position: absolute;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    transition: opacity 0.2s ease-out;
+
+    // Pending image - hidden while loading
+    &.pending {
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    // Loaded image - fully visible
+    &.loaded {
+        opacity: 1;
     }
 }
 
