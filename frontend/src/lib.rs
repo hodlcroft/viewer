@@ -505,7 +505,7 @@ pub async fn fetch_hcf_image(
         "HCF image bytes received"
     );
 
-    // Create a blob from the bytes
+    // Create blob URL
     let array = js_sys::Uint8Array::new_with_length(bytes.len() as u32);
     array.copy_from(&bytes);
 
@@ -518,15 +518,10 @@ pub async fn fetch_hcf_image(
     let blob = web_sys::Blob::new_with_buffer_source_sequence_and_options(&blob_parts, &options)
         .map_err(|e| format!("Failed to create blob: {:?}", e))?;
 
-    // Create an object URL
     let url = web_sys::Url::create_object_url_with_blob(&blob)
         .map_err(|e| format!("Failed to create object URL: {:?}", e))?;
 
-    tracing::info!(
-        blob_url = %url,
-        blob_size = blob.size(),
-        "Created blob URL for HCF image"
-    );
+    tracing::info!(blob_url = %url, "Created blob URL for HCF image (v2)");
 
     Ok(url)
 }

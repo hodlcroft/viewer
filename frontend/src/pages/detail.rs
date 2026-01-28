@@ -3,24 +3,6 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
-/// Context for persisting the displayed image URL across navigations
-/// This is stored at the DetailPage level so it survives TokenDetail re-renders
-#[derive(Clone, Debug, Default)]
-pub struct DisplayedImageContext {
-    /// The last fully loaded image URL - persists across token navigations
-    pub url: RwSignal<Option<String>>,
-}
-
-/// Image loading state for the detail view
-/// Tracks the pending image being loaded
-#[derive(Clone, Debug, Default, PartialEq)]
-struct ImageState {
-    /// The pending image URL being loaded
-    pending_url: Option<String>,
-    /// Whether we're currently fetching from HCF
-    is_fetching: bool,
-}
-
 #[component]
 pub fn DetailPage() -> impl IntoView {
     let params = use_params_map();
@@ -28,12 +10,6 @@ pub fn DetailPage() -> impl IntoView {
 
     let slug = move || params.read().get("slug").unwrap_or_default();
     let id = move || params.read().get("id").unwrap_or_default();
-
-    // Create and provide the displayed image context - persists across token navigations
-    let displayed_image_ctx = DisplayedImageContext {
-        url: RwSignal::new(None),
-    };
-    provide_context(displayed_image_ctx);
 
     // Fetch collection data
     let collection_resource = LocalResource::new(move || {
@@ -239,61 +215,45 @@ fn TokenDetail(
         0.0
     };
 
-    // Get the displayed image context (persists across token navigations)
-    let displayed_ctx = expect_context::<DisplayedImageContext>();
+    // NodeRef to the main image element - we'll manipulate it directly
+    let img_ref = NodeRef::<leptos::html::Img>::new();
 
-    // Image loading state for pending image
-    let (image_state, set_image_state) = signal(ImageState {
-        is_fetching: true,
-        ..Default::default()
-    });
+    // Track loading state for spinner
+    let (is_loading, set_is_loading) = signal(true);
 
     // Fetch full image from HCF if available
     if let (Some(hcf_info), Some(location)) = (hcf.clone(), token.hcf_location.clone()) {
         let slug_for_fetch = slug.clone();
 
+        // Clone img_ref for the async block
+        let img_ref_clone = img_ref.clone();
+
         wasm_bindgen_futures::spawn_local(async move {
             match fetch_hcf_image(&slug_for_fetch, &hcf_info, &location).await {
-                Ok(url) => {
-                    tracing::info!(blob_url = %url, "Setting pending URL for image");
-                    // Set the pending URL - displayed stays the same until img loads
-                    set_image_state.update(|state| {
-                        state.pending_url = Some(url);
-                        state.is_fetching = false;
-                    });
+                Ok(blob_url) => {
+                    tracing::info!(blob_url = %blob_url, "Got blob URL, setting on img element");
+
+                    // Directly set src and show image
+                    if let Some(img) = img_ref_clone.get() {
+                        // Revoke previous blob URL if any
+                        let old_src = img.src();
+                        if old_src.starts_with("blob:") {
+                            let _ = web_sys::Url::revoke_object_url(&old_src);
+                        }
+                        img.set_src(&blob_url);
+                        let _ = img.class_list().add_1("loaded");
+                    }
+                    set_is_loading.set(false);
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch HCF image: {}", e);
-                    set_image_state.update(|state| {
-                        state.is_fetching = false;
-                    });
+                    set_is_loading.set(false);
                 }
             }
         });
     } else {
-        set_image_state.update(|state| {
-            state.is_fetching = false;
-        });
+        set_is_loading.set(false);
     }
-
-    // When pending image element loads, promote it to displayed
-    let on_pending_load = {
-        let displayed_url = displayed_ctx.url;
-        move |_| {
-            tracing::info!("Pending image onload fired");
-            // First, get the pending URL without modifying state
-            let pending = image_state.get().pending_url.clone();
-            if let Some(url) = pending {
-                tracing::info!(blob_url = %url, "Promoting pending image to displayed");
-                // Set the displayed URL first
-                displayed_url.set(Some(url));
-                // Then clear the pending URL
-                set_image_state.update(|state| {
-                    state.pending_url = None;
-                });
-            }
-        }
-    };
 
     // Swipe/drag detection for mobile navigation
     let (pointer_start_x, set_pointer_start_x) = signal(0.0f64);
@@ -400,46 +360,12 @@ fn TokenDetail(
                     aria-label=format!("NFT {} (loading)", token_name_for_sprite)
                 ></div>
 
-                // Displayed image (the currently visible one - persisted in context)
-                {move || {
-                    displayed_ctx.url.get().map(|url| view! {
-                        <img
-                            class="detail-image loaded"
-                            src=url
-                            alt=format!("NFT {}", token_name_for_img)
-                        />
-                    })
-                }}
-
-                // Pending image (loading in background, hidden until ready)
-                {move || {
-                    let state = image_state.get();
-                    let on_load = on_pending_load.clone();
-                    state.pending_url.clone().map(|url| {
-                        let on_load_for_ref = on_load.clone();
-                        view! {
-                            <img
-                                class="detail-image pending"
-                                src=url
-                                alt=""
-                                on:load=on_load
-                                node_ref={
-                                    // Check if already loaded when element is created
-                                    let node_ref = NodeRef::<leptos::html::Img>::new();
-                                    Effect::new(move |_| {
-                                        if let Some(img) = node_ref.get() {
-                                            if img.complete() && img.natural_width() > 0 {
-                                                tracing::info!("Image already complete on mount");
-                                                on_load_for_ref(web_sys::Event::new("load").unwrap());
-                                            }
-                                        }
-                                    });
-                                    node_ref
-                                }
-                            />
-                        }
-                    })
-                }}
+                // Full-res image - src is set directly via NodeRef when data URL is ready
+                <img
+                    class="detail-image"
+                    node_ref=img_ref
+                    alt=format!("NFT {}", token_name_for_img)
+                />
             </div>
 
             // Floating panel
@@ -449,10 +375,7 @@ fn TokenDetail(
                     <span class="tp-title">{token.name.clone()}</span>
                     <div
                         class="tp-header-spinner"
-                        class:hidden=move || {
-                            let state = image_state.get();
-                            !state.is_fetching && state.pending_url.is_none()
-                        }
+                        class:hidden=move || !is_loading.get()
                     >
                         <div class="spinner"></div>
                     </div>

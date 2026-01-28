@@ -135,22 +135,42 @@ impl HcfBundler {
         Ok(())
     }
 
-    /// Finalize the current shard.
-    fn finalize_shard(&mut self) -> Result<(), HcfError> {
-        if let Some(writer) = self.current_writer.take() {
-            drop(writer); // Ensure all data is flushed
-
+    /// Finalize the current shard, optionally padding to fixed shard_size.
+    fn finalize_shard_inner(&mut self, pad_to_fixed_size: bool) -> Result<(), HcfError> {
+        if let Some(mut writer) = self.current_writer.take() {
             if self.current_shard_images > 0 {
+                let final_size = if pad_to_fixed_size {
+                    // Pad to fixed shard size so global_offset math works correctly
+                    let padding_needed = self.config.shard_size as u64 - self.current_shard_size;
+                    if padding_needed > 0 {
+                        let zeros = vec![0u8; padding_needed as usize];
+                        writer.write_all(&zeros)?;
+                        self.global_offset += padding_needed;
+                    }
+                    self.config.shard_size as u64
+                } else {
+                    self.current_shard_size
+                };
+
+                drop(writer); // Ensure all data is flushed
+
                 self.shards.push(ShardInfo {
                     index: self.current_shard,
                     path: self.shard_path(self.current_shard),
                     image_count: self.current_shard_images,
-                    size: self.current_shard_size,
+                    size: final_size,
                 });
                 self.current_shard += 1;
+            } else {
+                drop(writer);
             }
         }
         Ok(())
+    }
+
+    /// Finalize intermediate shard with padding for consistent global offsets.
+    fn finalize_shard(&mut self) -> Result<(), HcfError> {
+        self.finalize_shard_inner(true)
     }
 
     /// Add an image to the bundle.
@@ -200,7 +220,8 @@ impl HcfBundler {
 
     /// Finish bundling and return results.
     pub fn finish(mut self) -> Result<HcfBundleResult, HcfError> {
-        self.finalize_shard()?;
+        // Last shard doesn't need padding
+        self.finalize_shard_inner(false)?;
 
         Ok(HcfBundleResult {
             total_size: self.global_offset,
