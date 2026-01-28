@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Internal crates
-viewer-format = { path = "../crates/format" }
+viewer-binary = { path = "../crates/binary" }
 
 # Leptos framework (CSR mode)
 leptos = { version = "0.8", features = ["csr"] }

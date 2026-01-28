@@ -1,22 +1,17 @@
-use viewer_format::TokenDetails;
+use crate::TokenInfo;
 use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
 
-/// Item type for the grid: (original_index, token)
-pub type GridItem = (usize, TokenDetails);
-
 /// How many items to load per batch
-const BATCH_SIZE: usize = 300;
+const BATCH_SIZE: usize = 128;
 
 /// Infinite scrolling grid that loads items in batches
 #[component]
 pub fn InfiniteGrid(
-    /// Project name
-    project: String,
-    /// Seed
-    seed: String,
-    /// All items to display (original_index, token)
-    items: Signal<Vec<GridItem>>,
+    /// Collection slug
+    slug: String,
+    /// All items to display
+    items: Signal<Vec<TokenInfo>>,
 ) -> impl IntoView {
     // Track how many items to show
     let (visible_count, set_visible_count) = signal(BATCH_SIZE);
@@ -89,17 +84,14 @@ pub fn InfiniteGrid(
         <div class="infinite-grid">
             <For
                 each=visible_items
-                key=|(original_idx, token)| format!("{}-{}", original_idx, token.id)
+                key=|token| token.index
                 children={
-                    let project = project.clone();
-                    let seed = seed.clone();
-                    move |(original_idx, token)| {
+                    let slug = slug.clone();
+                    move |token| {
                         view! {
                             <crate::NftCard
-                                project=project.clone()
-                                seed=seed.clone()
+                                slug=slug.clone()
                                 token=token
-                                index=original_idx
                             />
                         }
                     }

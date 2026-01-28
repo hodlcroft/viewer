@@ -1,63 +1,60 @@
-use crate::{fetch_asset_details, AssetDetailsCache, InfiniteGrid};
-use viewer_format::{AttributeValue, TokenDetails, TraitSummary};
+use crate::{CollectionCache, InfiniteGrid, TraitInfo, fetch_collection};
 use leptos::prelude::*;
-use leptos_router::hooks::{use_params_map, use_query_map};
-use std::collections::{BTreeMap, HashMap};
+use leptos_router::hooks::use_params_map;
+use std::collections::HashMap;
 
 /// Active filters: trait_name -> value
 pub type Filters = HashMap<String, String>;
+
+/// Build a filter bitmap from active filters
+fn build_filter_bitmap(filters: &Filters, traits: &[TraitInfo], bitmap_size: usize) -> Vec<u8> {
+    let mut bitmap = vec![0u8; bitmap_size];
+
+    for (trait_name, value) in filters {
+        // Find the trait
+        if let Some(trait_info) = traits.iter().find(|t| &t.name == trait_name) {
+            // Find the value
+            if let Some(value_info) = trait_info.values.iter().find(|v| &v.value == value) {
+                // Set the bit
+                let byte_idx = value_info.bit_index as usize / 8;
+                let bit_idx = value_info.bit_index as usize % 8;
+                if byte_idx < bitmap.len() {
+                    bitmap[byte_idx] |= 1 << bit_idx;
+                }
+            }
+        }
+    }
+
+    bitmap
+}
 
 /// A searchable trait-value pair
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraitValueOption {
     pub trait_name: String,
     pub value: String,
-    pub display: String, // "Trait: Value"
+    pub display: String,
     pub count: usize,
     pub percentage: f64,
 }
 
-/// Build a filter query string from filters map
-fn build_filter_string(filters: &Filters) -> String {
-    filters
-        .iter()
-        .map(|(k, v)| format!("{}:{}", urlencoding::encode(k), urlencoding::encode(v)))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-/// Parse filters from a query string value
-/// Format: TraitName:Value or TraitName:Value,OtherTrait:OtherValue
-fn parse_filter_string(filter_str: &str) -> Filters {
-    let mut filters = HashMap::new();
-
-    for part in filter_str.split(',') {
-        if let Some((trait_name, value)) = part.split_once(':') {
-            let decoded_name = urlencoding::decode(trait_name)
-                .map(|s| s.into_owned())
-                .unwrap_or_else(|_| trait_name.to_string());
-            let decoded_value = urlencoding::decode(value)
-                .map(|s| s.into_owned())
-                .unwrap_or_else(|_| value.to_string());
-            filters.insert(decoded_name, decoded_value);
-        }
-    }
-
-    filters
-}
-
-/// Build searchable options from trait summary
-fn build_trait_options(trait_summary: &BTreeMap<String, TraitSummary>) -> Vec<TraitValueOption> {
+/// Build searchable options from trait info
+fn build_trait_options(traits: &[TraitInfo], total_tokens: usize) -> Vec<TraitValueOption> {
     let mut options = Vec::new();
 
-    for (trait_name, summary) in trait_summary {
-        for (value, stats) in &summary.values {
+    for trait_info in traits {
+        for value_info in &trait_info.values {
+            let percentage = if total_tokens > 0 {
+                (value_info.count as f64 / total_tokens as f64) * 100.0
+            } else {
+                0.0
+            };
             options.push(TraitValueOption {
-                trait_name: trait_name.clone(),
-                value: value.clone(),
-                display: format!("{}: {}", trait_name, value),
-                count: stats.count,
-                percentage: stats.percentage,
+                trait_name: trait_info.name.clone(),
+                value: value_info.value.clone(),
+                display: format!("{}: {}", trait_info.name, value_info.value),
+                count: value_info.count as usize,
+                percentage,
             });
         }
     }
@@ -120,54 +117,26 @@ impl Default for FilterContext {
     }
 }
 
-/// Check if a token matches all active filters
-fn token_matches_filters(token: &TokenDetails, filters: &Filters) -> bool {
-    filters.iter().all(|(trait_name, filter_value)| {
-        token
-            .attributes
-            .get(trait_name)
-            .map_or(false, |attr_value| match attr_value {
-                AttributeValue::Single(val) => val == filter_value,
-                AttributeValue::Multiple(vals) => vals.contains(filter_value),
-            })
-    })
-}
-
 #[component]
 pub fn GalleryPage() -> impl IntoView {
     let params = use_params_map();
-    let query = use_query_map();
-    let cache = expect_context::<AssetDetailsCache>();
+    let cache = expect_context::<CollectionCache>();
 
-    // Provide filter context for this gallery (Copy so no ownership issues)
+    // Provide filter context for this gallery
     let filter_ctx = FilterContext::new();
     provide_context(filter_ctx);
 
-    // Sync filters from URL query params reactively
-    Effect::new(move || {
-        let query_map = query.read();
-        let filter_param = query_map.get("filter");
-        let filters = match filter_param {
-            Some(param) if !param.is_empty() => parse_filter_string(&param),
-            _ => HashMap::new(),
-        };
-        filter_ctx.set_filters(filters);
-    });
+    let slug = move || params.read().get("slug").unwrap_or_default();
 
-    let project = move || params.read().get("project").unwrap_or_default();
-    let seed = move || params.read().get("seed").unwrap_or_default();
-
-    // LocalResource for client-side only fetching, uses shared cache
-    let details_resource = LocalResource::new(move || {
-        let proj = project();
-        let s = seed();
+    // Fetch collection data
+    let collection_resource = LocalResource::new(move || {
+        let s = slug();
         let cache = cache.clone();
         async move {
-            if proj.is_empty() || s.is_empty() {
-                return Err("Missing project or seed".to_string());
+            if s.is_empty() {
+                return Err("Missing collection slug".to_string());
             }
-
-            fetch_asset_details(&proj, &s, &cache).await
+            fetch_collection(&s, &cache).await
         }
     });
 
@@ -175,8 +144,7 @@ pub fn GalleryPage() -> impl IntoView {
         <div class="gallery-view">
             <Suspense fallback=|| view! {
                 <GalleryHeader
-                    project="".to_string()
-                    seed="".to_string()
+                    slug="".to_string()
                     total_count=0
                     filtered_count=0
                     trait_options=vec![]
@@ -189,69 +157,50 @@ pub fn GalleryPage() -> impl IntoView {
                 </div>
             }>
                 {move || Suspend::new({
-                    let details_resource = details_resource.clone();
+                    let collection_resource = collection_resource.clone();
                     async move {
-                        match details_resource.await {
-                            Ok(details) => {
-                                let proj = project();
-                                let s = seed();
-                                let total = details.tokens.len();
+                        match collection_resource.await {
+                            Ok(collection) => {
+                                let s = slug();
+                                let total = collection.token_count as usize;
+                                let trait_options = build_trait_options(&collection.traits, total);
+                                let bitmap_size = collection.tokens.first()
+                                    .map(|t| t.trait_bitmap.len())
+                                    .unwrap_or(0);
 
-                                // Build searchable trait options
-                                let trait_options = build_trait_options(&details.trait_summary);
+                                // Store collection for filtering
+                                let collection = StoredValue::new(collection);
 
-                                // Create indexed tokens for filtering
-                                let all_tokens: Vec<(usize, TokenDetails)> = details.tokens
-                                    .iter()
-                                    .cloned()
-                                    .enumerate()
-                                    .collect();
-
-                                // Derive filtered tokens reactively as a Signal
-                                let filtered_tokens = {
-                                    let all_tokens = all_tokens.clone();
-                                    Signal::derive(move || {
-                                        let filters = filter_ctx.get_filters();
+                                // Derive filtered tokens reactively
+                                let filtered_tokens = Signal::derive(move || {
+                                    let filters = filter_ctx.get_filters();
+                                    collection.with_value(|c| {
                                         if filters.is_empty() {
-                                            all_tokens.clone()
+                                            c.tokens.clone()
                                         } else {
-                                            all_tokens
+                                            let filter_bitmap = build_filter_bitmap(&filters, &c.traits, bitmap_size);
+                                            c.tokens
                                                 .iter()
-                                                .filter(|(_, token)| token_matches_filters(token, &filters))
+                                                .filter(|token| c.token_matches_filter(token, &filter_bitmap))
                                                 .cloned()
                                                 .collect()
                                         }
                                     })
-                                };
+                                });
 
-                                let filtered_count = {
-                                    let all_tokens = all_tokens.clone();
-                                    move || {
-                                        let filters = filter_ctx.get_filters();
-                                        if filters.is_empty() {
-                                            all_tokens.len()
-                                        } else {
-                                            all_tokens
-                                                .iter()
-                                                .filter(|(_, token)| token_matches_filters(token, &filters))
-                                                .count()
-                                        }
-                                    }
-                                };
+                                let filtered_count = Signal::derive(move || filtered_tokens.get().len());
 
                                 view! {
                                     <GalleryHeader
-                                        project=proj.clone()
-                                        seed=s.clone()
+                                        slug=s.clone()
                                         total_count=total
-                                        filtered_count=Signal::derive(filtered_count)
+                                        filtered_count=filtered_count
                                         trait_options=trait_options
                                         loading=false
                                     />
                                     <div class="gallery-content">
                                         <InfiniteGrid
-                                            project=proj.clone()
-                                            seed=s.clone()
+                                            slug=s.clone()
                                             items=filtered_tokens
                                         />
                                     </div>
@@ -259,8 +208,7 @@ pub fn GalleryPage() -> impl IntoView {
                             }
                             Err(e) => view! {
                                 <GalleryHeader
-                                    project=project()
-                                    seed=seed()
+                                    slug=slug()
                                     total_count=0
                                     filtered_count=0
                                     trait_options=vec![]
@@ -283,8 +231,7 @@ pub fn GalleryPage() -> impl IntoView {
 
 #[component]
 fn GalleryHeader(
-    project: String,
-    seed: String,
+    slug: String,
     total_count: usize,
     #[prop(into)] filtered_count: Signal<usize>,
     trait_options: Vec<TraitValueOption>,
@@ -295,9 +242,6 @@ fn GalleryHeader(
     let filters_active = move || filter_ctx.map(|ctx| ctx.is_active()).unwrap_or(false);
     let get_filters = move || filter_ctx.map(|ctx| ctx.get_filters()).unwrap_or_default();
 
-    // Base path for URL navigation
-    let base_path = format!("/{}/{}", project, seed);
-
     // Search state
     let (search_query, set_search_query) = signal(String::new());
     let (show_suggestions, set_show_suggestions) = signal(false);
@@ -306,7 +250,7 @@ fn GalleryHeader(
     // Store trait options for reactive access
     let stored_options = StoredValue::new(trait_options);
 
-    // Filter suggestions based on search query - use Memo for caching
+    // Filter suggestions based on search query
     let suggestions = Memo::new(move |_| {
         let query = search_query.get().to_lowercase();
         let current_filters = get_filters();
@@ -330,39 +274,6 @@ fn GalleryHeader(
                 .collect::<Vec<_>>()
         })
     });
-
-    // Store base path for reuse in closures
-    let stored_base_path = StoredValue::new(base_path.clone());
-
-    // Helper to navigate to a URL (uses history API directly)
-    let go_to = move |url: &str| {
-        if let Some(window) = web_sys::window() {
-            let _ = window
-                .history()
-                .and_then(|h| h.push_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(url)));
-            // Dispatch popstate to trigger router update
-            let _ = window.dispatch_event(&web_sys::Event::new("popstate").unwrap());
-        }
-    };
-
-    // Helper to build URL from filters and navigate (preserves access token)
-    let navigate_to_filters = move |filters: &Filters| {
-        let url = stored_base_path.with_value(|base| {
-            let access_token = crate::get_access_token();
-            match (filters.is_empty(), access_token) {
-                (true, None) => base.clone(),
-                (true, Some(t)) => format!("{}?token={}", base, t),
-                (false, None) => format!("{}?filter={}", base, build_filter_string(filters)),
-                (false, Some(t)) => format!(
-                    "{}?token={}&filter={}",
-                    base,
-                    t,
-                    build_filter_string(filters)
-                ),
-            }
-        });
-        go_to(&url);
-    };
 
     // Handle keyboard navigation
     let on_keydown = move |ev: web_sys::KeyboardEvent| {
@@ -389,9 +300,9 @@ fn GalleryHeader(
                 ev.prevent_default();
                 let idx = selected_index.get();
                 if let Some(opt) = current_suggestions.get(idx) {
-                    let mut filters = get_filters();
-                    filters.insert(opt.trait_name.clone(), opt.value.clone());
-                    navigate_to_filters(&filters);
+                    if let Some(ctx) = filter_ctx {
+                        ctx.add_filter(opt.trait_name.clone(), opt.value.clone());
+                    }
                     set_search_query.set(String::new());
                     set_show_suggestions.set(false);
                     set_selected_index.set(0);
@@ -409,8 +320,7 @@ fn GalleryHeader(
         <div class="gallery-header">
             <div class="gallery-header-main">
                 <div class="gallery-header-left">
-                    <h1 class="gallery-title">{project.clone()}</h1>
-                    <span class="gallery-seed">{format!("Seed: {seed}")}</span>
+                    <h1 class="gallery-title">{slug.clone()}</h1>
                 </div>
                 <div class="gallery-header-right">
                     {if loading {
@@ -432,7 +342,7 @@ fn GalleryHeader(
                 </div>
             </div>
 
-            // Search input row - always visible
+            // Search input row
             <div class="gallery-search">
                 <div class="search-container">
                     <input
@@ -448,7 +358,6 @@ fn GalleryHeader(
                         }
                         on:focus=move |_| set_show_suggestions.set(true)
                         on:blur=move |_| {
-                            // Delay to allow click on suggestion
                             use gloo_timers::callback::Timeout;
                             let timeout = Timeout::new(150, move || {
                                 set_show_suggestions.set(false);
@@ -475,9 +384,9 @@ fn GalleryHeader(
                                             class="search-suggestion"
                                             class:selected=is_selected
                                             on:mousedown=move |_| {
-                                                let mut filters = get_filters();
-                                                filters.insert(opt_trait.clone(), opt_value.clone());
-                                                navigate_to_filters(&filters);
+                                                if let Some(ctx) = filter_ctx {
+                                                    ctx.add_filter(opt_trait.clone(), opt_value.clone());
+                                                }
                                                 set_search_query.set(String::new());
                                                 set_show_suggestions.set(false);
                                                 set_selected_index.set(0);
@@ -495,7 +404,7 @@ fn GalleryHeader(
                 </div>
             </div>
 
-            // Filter chips row - only show when filters are active
+            // Filter chips row
             <Show when=filters_active>
                 {move || {
                     let filters_vec: Vec<(String, String)> = get_filters().into_iter().collect();
@@ -513,9 +422,9 @@ fn GalleryHeader(
                                         <button
                                             class="filter-chip-remove"
                                             on:click=move |_| {
-                                                let mut filters = get_filters();
-                                                filters.remove(&trait_name_for_remove);
-                                                navigate_to_filters(&filters);
+                                                if let Some(ctx) = filter_ctx {
+                                                    ctx.remove_filter(&trait_name_for_remove);
+                                                }
                                             }
                                         >
                                             "×"
@@ -526,7 +435,9 @@ fn GalleryHeader(
                             <button
                                 class="filter-clear"
                                 on:click=move |_| {
-                                    navigate_to_filters(&HashMap::new());
+                                    if let Some(ctx) = filter_ctx {
+                                        ctx.clear_filters();
+                                    }
                                 }
                             >
                                 "Clear all"
