@@ -115,6 +115,7 @@ pub enum AnalysisError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn make_asset(traits: &[(&str, &str)]) -> NormalizedAsset {
         let mut trait_map = HashMap::new();

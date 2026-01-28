@@ -28,10 +28,8 @@ pub struct PipelineConfig {
     pub build_dir: PathBuf,
     /// IPFS fetch concurrency
     pub fetch_concurrency: usize,
-    /// Sprite thumbnail size in pixels
-    pub sprite_thumb_size: u32,
-    /// Sprite grid size (NxN per sheet)
-    pub sprite_grid_size: u32,
+    /// Max sprite sheet dimension (default 2048 for GPU compatibility)
+    pub sprite_max_sheet_size: u32,
     /// HCF shard size in bytes
     pub hcf_shard_size: usize,
     /// Max image dimension for HCF
@@ -45,8 +43,7 @@ impl Default for PipelineConfig {
         Self {
             build_dir: PathBuf::from(".build"),
             fetch_concurrency: 20,
-            sprite_thumb_size: 150,
-            sprite_grid_size: 10,
+            sprite_max_sheet_size: 1024, // GPU-friendly 4x4 grid, auto-detect cell size from first image
             hcf_shard_size: 250 * 1024 * 1024, // 250 MB
             hcf_max_dimension: 2048,
             webp_quality: 85,
