@@ -165,7 +165,7 @@ impl TraitSchemaBuilder {
         values: Vec<(StringRef, u16)>,
     ) -> Result<(), BinaryFormatError> {
         let value_count = values.len();
-        if self.current_offset as usize + value_count > 512 {
+        if self.current_offset as usize + value_count > crate::BitmapSize::max_supported() {
             return Err(BinaryFormatError::TooManyTraitValues(
                 self.current_offset as usize + value_count,
             ));

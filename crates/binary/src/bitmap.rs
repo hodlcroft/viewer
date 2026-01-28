@@ -17,18 +17,21 @@ pub enum BitmapSize {
     U256 = 2,
     /// Up to 512 trait:value combinations (64 bytes per token)
     U512 = 3,
+    /// Up to 1024 trait:value combinations (128 bytes per token)
+    U1024 = 4,
 }
 
 impl BitmapSize {
     /// Select the smallest bitmap size that fits the given number of trait values.
     ///
-    /// Returns `None` if the count exceeds 512 (the maximum supported).
+    /// Returns `None` if the count exceeds 1024 (the maximum supported).
     pub fn for_count(trait_value_count: usize) -> Option<Self> {
         match trait_value_count {
             0..=64 => Some(BitmapSize::U64),
             65..=128 => Some(BitmapSize::U128),
             129..=256 => Some(BitmapSize::U256),
             257..=512 => Some(BitmapSize::U512),
+            513..=1024 => Some(BitmapSize::U1024),
             _ => None,
         }
     }
@@ -40,6 +43,7 @@ impl BitmapSize {
             BitmapSize::U128 => 16,
             BitmapSize::U256 => 32,
             BitmapSize::U512 => 64,
+            BitmapSize::U1024 => 128,
         }
     }
 
@@ -50,6 +54,7 @@ impl BitmapSize {
             BitmapSize::U128 => 128,
             BitmapSize::U256 => 256,
             BitmapSize::U512 => 512,
+            BitmapSize::U1024 => 1024,
         }
     }
 
@@ -60,8 +65,14 @@ impl BitmapSize {
             1 => Some(BitmapSize::U128),
             2 => Some(BitmapSize::U256),
             3 => Some(BitmapSize::U512),
+            4 => Some(BitmapSize::U1024),
             _ => None,
         }
+    }
+
+    /// Maximum supported trait:value combinations across all bitmap sizes.
+    pub const fn max_supported() -> usize {
+        BitmapSize::U1024.max_values()
     }
 }
 
@@ -72,6 +83,7 @@ impl std::fmt::Display for BitmapSize {
             BitmapSize::U128 => write!(f, "U128 (16 bytes)"),
             BitmapSize::U256 => write!(f, "U256 (32 bytes)"),
             BitmapSize::U512 => write!(f, "U512 (64 bytes)"),
+            BitmapSize::U1024 => write!(f, "U1024 (128 bytes)"),
         }
     }
 }
@@ -90,7 +102,9 @@ mod tests {
         assert_eq!(BitmapSize::for_count(256), Some(BitmapSize::U256));
         assert_eq!(BitmapSize::for_count(257), Some(BitmapSize::U512));
         assert_eq!(BitmapSize::for_count(512), Some(BitmapSize::U512));
-        assert_eq!(BitmapSize::for_count(513), None);
+        assert_eq!(BitmapSize::for_count(513), Some(BitmapSize::U1024));
+        assert_eq!(BitmapSize::for_count(1024), Some(BitmapSize::U1024));
+        assert_eq!(BitmapSize::for_count(1025), None);
     }
 
     #[test]
@@ -99,5 +113,6 @@ mod tests {
         assert_eq!(BitmapSize::U128.byte_size(), 16);
         assert_eq!(BitmapSize::U256.byte_size(), 32);
         assert_eq!(BitmapSize::U512.byte_size(), 64);
+        assert_eq!(BitmapSize::U1024.byte_size(), 128);
     }
 }

@@ -18,7 +18,7 @@ pub enum BinaryFormatError {
     StringTableOverflow(String),
 
     /// Too many trait:value combinations for any bitmap size
-    #[error("too many trait values: {0} (max 512). Add traits to ignore list.")]
+    #[error("too many trait values: {0} (max 1024). Add traits to ignore list.")]
     TooManyTraitValues(usize),
 
     /// Token count exceeds u16::MAX
