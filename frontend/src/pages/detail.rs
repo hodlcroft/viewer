@@ -11,38 +11,36 @@ use std::cell::RefCell;
 struct LoadingTracker {
     /// Current request ID (incremented on each new request)
     current_request_id: Arc<AtomicU64>,
-    /// Pending request count
-    pending_count: RwSignal<usize>,
+    /// Completed request ID (when this equals current, loading is done)
+    completed_request_id: RwSignal<u64>,
 }
 
 impl LoadingTracker {
     fn new() -> Self {
         Self {
             current_request_id: Arc::new(AtomicU64::new(0)),
-            pending_count: RwSignal::new(0),
+            completed_request_id: RwSignal::new(0),
         }
     }
 
     /// Start a new loading request, returns request_id
     fn start_request(&self) -> u64 {
-        let id = self.current_request_id.fetch_add(1, Ordering::SeqCst) + 1;
-        self.pending_count.update(|c| *c += 1);
-        id
+        self.current_request_id.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     /// Complete a request - only updates state if request ID matches current
     fn complete_request(&self, request_id: u64) {
         let current = self.current_request_id.load(Ordering::SeqCst);
         if request_id == current {
-            // This was the latest request, decrement pending count
-            self.pending_count.update(|c| *c = c.saturating_sub(1));
+            self.completed_request_id.set(request_id);
         }
-        // Otherwise, this was a stale request - ignore it
     }
 
-    /// Check if there are any pending requests
+    /// Check if there's an active request
     fn is_loading(&self) -> bool {
-        self.pending_count.get() > 0
+        let current = self.current_request_id.load(Ordering::SeqCst);
+        let completed = self.completed_request_id.get();
+        current > 0 && completed != current
     }
 
     /// Get the current request ID (for checking if a request is stale)
