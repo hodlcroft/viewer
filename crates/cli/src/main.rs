@@ -73,6 +73,9 @@ enum FetchChain {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file if present
+    dotenvy::dotenv().ok();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -157,10 +160,22 @@ async fn cmd_fetch_cardano(policy_id: &str, config_path: Option<PathBuf>) -> any
     Ok(())
 }
 
-/// Set up file logging for the build process.
-fn setup_build_logging(
-    log_path: &std::path::Path,
-) -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
+/// A writer that flushes after every write for immediate log visibility
+struct FlushingFile(std::fs::File);
+
+impl std::io::Write for FlushingFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = std::io::Write::write(&mut self.0, buf)?;
+        std::io::Write::flush(&mut self.0)?;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut self.0)
+    }
+}
+
+fn setup_build_logging(log_path: &std::path::Path) -> anyhow::Result<()> {
     use std::io::Write;
 
     // Truncate and write header
@@ -174,21 +189,21 @@ fn setup_build_logging(
     )?;
     drop(file);
 
-    // Set up non-blocking file appender
+    // Set up writer that flushes after each write
     let file = std::fs::OpenOptions::new().append(true).open(log_path)?;
-    let (non_blocking, guard) = tracing_appender::non_blocking(file);
+    let writer = std::sync::Mutex::new(FlushingFile(file));
 
     // Initialize tracing with file layer (info level and above)
     tracing_subscriber::registry()
         .with(
             fmt::layer()
-                .with_writer(non_blocking)
+                .with_writer(writer)
                 .with_ansi(false)
                 .with_filter(EnvFilter::new("info")),
         )
         .init();
 
-    Ok(guard)
+    Ok(())
 }
 
 /// Sync a Cardano collection: fetch, analyze, generate sprites, HCF bundles, and collection.bin.
@@ -222,7 +237,7 @@ async fn cmd_sync_cardano(
 
     // Set up file logging
     let log_path = pipeline.dirs.build_log();
-    let _log_guard = setup_build_logging(&log_path)?;
+    setup_build_logging(&log_path)?;
     println!("  Build log: {}", log_path.display());
 
     tracing::info!("Starting sync for policy_id={}", policy_id);
@@ -358,7 +373,7 @@ async fn cmd_sync_cardano(
             .await?
         } else {
             println!("\n[4/6] Fetching images from IPFS...");
-            fetch_images(&mut pipeline, &assets, Some(progress_cb)).await?
+            fetch_images(&mut pipeline, &assets, &config.images, Some(progress_cb)).await?
         };
 
         println!(

@@ -1,12 +1,12 @@
 //! Image fetching stage of the pipeline.
 
 use crate::NormalizedAsset;
-use crate::ipfs::{FetchError, IpfsFetcher};
+use crate::ipfs::{FetchError, Gateway, IpfsFetcher};
 use crate::pipeline::Pipeline;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Semaphore;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 use viewer_format::ImageSourceConfig;
 
 /// Result of fetching images for a collection.
@@ -26,12 +26,30 @@ pub type ProgressCallback = Box<dyn Fn(usize, usize, usize, usize) + Send + Sync
 /// - Skips images that already exist
 /// - Saves state periodically for resumability
 /// - Calls progress callback for CLI output
+///
+/// If `image_config` specifies custom gateways, those are used instead of the default gateways.
 pub async fn fetch_images(
     pipeline: &mut Pipeline,
     assets: &[NormalizedAsset],
+    image_config: &ImageSourceConfig,
     on_progress: Option<ProgressCallback>,
 ) -> Result<FetchResult, FetchError> {
-    let fetcher = Arc::new(IpfsFetcher::new(pipeline.config.fetch_concurrency));
+    // Create fetcher with custom gateways if specified
+    let fetcher = if image_config.gateways.is_empty() {
+        IpfsFetcher::new(pipeline.config.fetch_concurrency)
+    } else {
+        info!(
+            gateways = ?image_config.gateways,
+            "Using custom IPFS gateways for collection"
+        );
+        let custom_gateways: Vec<Gateway> = image_config
+            .gateways
+            .iter()
+            .map(|&gw| Gateway::from(gw))
+            .collect();
+        IpfsFetcher::new(pipeline.config.fetch_concurrency).with_gateways(custom_gateways)
+    };
+    let fetcher = Arc::new(fetcher);
 
     let fetched = Arc::new(AtomicUsize::new(0));
     let skipped = Arc::new(AtomicUsize::new(0));

@@ -6,11 +6,26 @@
 //! - Per-gateway health tracking
 //! - Concurrency limits via semaphore
 
+use cid::Cid;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
+use viewer_format::IpfsGateway;
+
+/// Convert a CID (v0 or v1) to CIDv1 string.
+/// Blockfrost requires CIDv1 format.
+fn to_cidv1(cid_str: &str) -> Option<String> {
+    let cid = Cid::from_str(cid_str).ok()?;
+    let cidv1 = if cid.version() == cid::Version::V0 {
+        Cid::new_v1(cid.codec(), cid.hash().to_owned())
+    } else {
+        cid
+    };
+    Some(cidv1.to_string())
+}
 
 /// IPFS gateway configuration.
 #[derive(Debug, Clone)]
@@ -21,6 +36,8 @@ pub struct Gateway {
     pub url_template: String,
     /// Optional authentication token (e.g., Pinata gateway key)
     pub token: Option<String>,
+    /// Whether this gateway requires CIDv1 format
+    pub requires_cidv1: bool,
     /// Current failure count (for deprioritization)
     failures: Arc<AtomicU32>,
 }
@@ -31,6 +48,18 @@ impl Gateway {
             name: name.to_string(),
             url_template: url_template.to_string(),
             token: None,
+            requires_cidv1: false,
+            failures: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Create the Blockfrost gateway (requires CIDv1).
+    pub fn new_blockfrost() -> Self {
+        Self {
+            name: "Blockfrost".to_string(),
+            url_template: "https://ipfs.blockfrost.dev/ipfs/{cid}".to_string(),
+            token: None,
+            requires_cidv1: true,
             failures: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -43,21 +72,35 @@ impl Gateway {
             name: name.to_string(),
             url_template: url_template.to_string(),
             token: Some(token.to_string()),
+            requires_cidv1: false,
             failures: Arc::new(AtomicU32::new(0)),
         }
     }
 
-    pub fn build_url(&self, cid: &str, path: Option<&str>) -> String {
-        let base = self.url_template.replace("{cid}", cid);
+    pub fn build_url(&self, cid: &str, path: Option<&str>) -> Option<String> {
+        // Convert to CIDv1 if required
+        let cid_to_use = if self.requires_cidv1 {
+            match to_cidv1(cid) {
+                Some(v1) => v1,
+                None => {
+                    debug!("Failed to convert CID to v1: {}", cid);
+                    return None;
+                }
+            }
+        } else {
+            cid.to_string()
+        };
+
+        let base = self.url_template.replace("{cid}", &cid_to_use);
         let url = match path {
             Some(p) => format!("{}/{}", base, p),
             None => base,
         };
         // Append token as query parameter if present
-        match &self.token {
+        Some(match &self.token {
             Some(token) => format!("{}?pinataGatewayToken={}", url, token),
             None => url,
-        }
+        })
     }
 
     pub fn record_failure(&self) {
@@ -73,31 +116,64 @@ impl Gateway {
     }
 }
 
+impl From<IpfsGateway> for Gateway {
+    fn from(gw: IpfsGateway) -> Self {
+        match gw {
+            IpfsGateway::Blockfrost => Gateway::new_blockfrost(),
+            IpfsGateway::Pinata => {
+                // Use dedicated gateway if configured, otherwise public
+                if let (Ok(host), Ok(key)) = (
+                    std::env::var("PINATA_GATEWAY_HOST"),
+                    std::env::var("PINATA_GATEWAY_KEY"),
+                ) {
+                    Gateway::new_with_token(
+                        "Pinata (dedicated)",
+                        &format!("https://{}/ipfs/{{cid}}", host),
+                        &key,
+                    )
+                } else {
+                    Gateway::new("Pinata", "https://gateway.pinata.cloud/ipfs/{cid}")
+                }
+            }
+            IpfsGateway::Dweb => Gateway::new("dweb.link", "https://dweb.link/ipfs/{cid}"),
+            IpfsGateway::IpfsIo => Gateway::new("ipfs.io", "https://ipfs.io/ipfs/{cid}"),
+        }
+    }
+}
+
 /// Default IPFS gateways in priority order.
 ///
+/// Includes Blockfrost (no API key needed) and optionally Pinata.
 /// If PINATA_GATEWAY_HOST and PINATA_GATEWAY_KEY are set in the environment,
 /// uses the dedicated Pinata gateway. Otherwise falls back to public gateway.
 pub fn default_gateways() -> Vec<Gateway> {
+    let mut gateways = vec![
+        // Blockfrost - no API key needed, requires CIDv1 (handled in build_url)
+        Gateway::new_blockfrost(),
+    ];
+
     // Check for dedicated Pinata gateway configuration
     if let (Ok(host), Ok(key)) = (
         std::env::var("PINATA_GATEWAY_HOST"),
         std::env::var("PINATA_GATEWAY_KEY"),
     ) {
         tracing::info!("Using dedicated Pinata gateway: {}", host);
-        vec![Gateway::new_with_token(
+        gateways.push(Gateway::new_with_token(
             "Pinata (dedicated)",
             &format!("https://{}/ipfs/{{cid}}", host),
             &key,
-        )]
+        ));
     } else {
         tracing::debug!(
             "Using public Pinata gateway (set PINATA_GATEWAY_HOST and PINATA_GATEWAY_KEY for dedicated)"
         );
-        vec![Gateway::new(
+        gateways.push(Gateway::new(
             "Pinata",
             "https://gateway.pinata.cloud/ipfs/{cid}",
-        )]
+        ));
     }
+
+    gateways
 }
 
 /// Fetched image data with format detection.
@@ -165,11 +241,13 @@ impl ImageFormat {
     }
 }
 
-/// IPFS fetcher with gateway racing and rate limiting.
+/// IPFS fetcher with sequential gateway fallback and round-robin load balancing.
 pub struct IpfsFetcher {
     client: reqwest::Client,
     gateways: Vec<Gateway>,
     semaphore: Arc<Semaphore>,
+    /// Counter for round-robin gateway selection
+    next_gateway: AtomicU32,
     max_retries: u32,
     base_delay: Duration,
 }
@@ -184,6 +262,7 @@ impl IpfsFetcher {
                 .expect("Failed to create HTTP client"),
             gateways: default_gateways(),
             semaphore: Arc::new(Semaphore::new(concurrency)),
+            next_gateway: AtomicU32::new(0),
             max_retries: 3,
             base_delay: Duration::from_millis(500),
         }
@@ -236,82 +315,57 @@ impl IpfsFetcher {
             .await
             .map_err(|_| FetchError::Cancelled)?;
 
-        self.fetch_with_racing(cid, path).await
+        self.fetch_with_fallback(cid, path).await
     }
 
-    async fn fetch_with_racing(
+    /// Fetch with round-robin gateway selection and sequential fallback.
+    /// On failure, rotates to the next gateway for subsequent requests.
+    async fn fetch_with_fallback(
         &self,
         cid: &str,
         path: Option<&str>,
     ) -> Result<FetchedImage, FetchError> {
-        use futures::future::select_ok;
-
-        // Sort gateways by failure count (healthiest first)
-        let mut gateways: Vec<_> = self.gateways.iter().collect();
-        gateways.sort_by_key(|g| g.failure_count());
-
-        debug!(
-            "Racing {} gateways for CID {} (path: {:?})",
-            gateways.len(),
-            cid,
-            path
-        );
-
-        let futures: Vec<_> = gateways
-            .iter()
-            .map(|gateway| {
-                let url = gateway.build_url(cid, path);
-                let client = self.client.clone();
-                let gateway_name = gateway.name.clone();
-                let gateway = (*gateway).clone();
-
-                Box::pin(async move {
-                    const MAX_RETRIES: u32 = 3;
-                    let mut last_error = None;
-
-                    for attempt in 0..MAX_RETRIES {
-                        match Self::fetch_from_gateway(&client, &url, &gateway_name).await {
-                            Ok(image) => {
-                                gateway.record_success();
-                                return Ok(image);
-                            }
-                            Err(FetchError::RateLimited {
-                                retry_after_secs, ..
-                            }) => {
-                                // Backoff on rate limit
-                                let delay = std::cmp::max(retry_after_secs, 1 << attempt);
-                                warn!(
-                                    gateway = %gateway_name,
-                                    attempt = attempt + 1,
-                                    delay_secs = delay,
-                                    "Rate limited, backing off"
-                                );
-                                tokio::time::sleep(Duration::from_secs(delay)).await;
-                                last_error = Some(FetchError::RateLimited {
-                                    gateway: gateway_name.clone(),
-                                    retry_after_secs,
-                                });
-                            }
-                            Err(e) => {
-                                gateway.record_failure();
-                                return Err(e);
-                            }
-                        }
-                    }
-
-                    gateway.record_failure();
-                    Err(last_error.unwrap_or_else(|| FetchError::Gateway {
-                        gateway: gateway_name,
-                        message: "Max retries exceeded".to_string(),
-                    }))
-                })
-            })
-            .collect();
-
-        match select_ok(futures).await {
-            Ok((image, _)) => Ok(image),
-            Err(e) => Err(e),
+        let num_gateways = self.gateways.len();
+        if num_gateways == 0 {
+            return Err(FetchError::Gateway {
+                gateway: "none".to_string(),
+                message: "No gateways configured".to_string(),
+            });
         }
+
+        // Get starting gateway index (round-robin)
+        let start_idx = self.next_gateway.fetch_add(1, Ordering::Relaxed) as usize % num_gateways;
+        let mut last_error = None;
+
+        // Try each gateway in round-robin order
+        for i in 0..num_gateways {
+            let idx = (start_idx + i) % num_gateways;
+            let gateway = &self.gateways[idx];
+
+            let Some(url) = gateway.build_url(cid, path) else {
+                debug!(gateway = %gateway.name, "Failed to build URL for CID {}", cid);
+                continue;
+            };
+
+            tracing::info!(gateway = %gateway.name, url = %url, "Fetching from IPFS");
+
+            match Self::fetch_from_gateway(&self.client, &url, &gateway.name).await {
+                Ok(image) => {
+                    tracing::info!(gateway = %gateway.name, url = %url, bytes = image.bytes.len(), "Fetch succeeded");
+                    return Ok(image);
+                }
+                Err(e) => {
+                    warn!(gateway = %gateway.name, url = %url, error = %e, "Gateway failed, trying next");
+                    last_error = Some(e);
+                    // Continue to next gateway
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| FetchError::Gateway {
+            gateway: "all".to_string(),
+            message: "All gateways failed".to_string(),
+        }))
     }
 
     async fn fetch_from_gateway(
@@ -525,12 +579,12 @@ mod tests {
 
         assert_eq!(
             gateway.build_url("QmTest", None),
-            "https://test.io/ipfs/QmTest"
+            Some("https://test.io/ipfs/QmTest".to_string())
         );
 
         assert_eq!(
             gateway.build_url("QmTest", Some("path/image.png")),
-            "https://test.io/ipfs/QmTest/path/image.png"
+            Some("https://test.io/ipfs/QmTest/path/image.png".to_string())
         );
     }
 }

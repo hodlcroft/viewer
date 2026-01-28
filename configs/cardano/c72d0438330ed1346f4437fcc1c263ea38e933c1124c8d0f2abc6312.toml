@@ -3,6 +3,7 @@ name = "KWIC"
 
 [images]
 source = "ipfs"
+gateways = ["dweb"]
 
 [traits]
 ignore = []

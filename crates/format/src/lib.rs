@@ -216,6 +216,29 @@ pub struct ImageSourceConfig {
     /// IIIF max size parameter (default: 1686)
     #[serde(default = "default_iiif_size")]
     pub iiif_size: u32,
+
+    /// Custom IPFS gateways for this collection.
+    ///
+    /// Use shortcodes: "blockfrost", "pinata", "dweb", "ipfs_io"
+    ///
+    /// If not specified, uses the default gateways (Blockfrost + Pinata).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gateways: Vec<IpfsGateway>,
+}
+
+/// Known IPFS gateways that can be configured per collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IpfsGateway {
+    /// Blockfrost IPFS gateway (requires CIDv1 conversion)
+    Blockfrost,
+    /// Pinata public gateway
+    Pinata,
+    /// dweb.link gateway (Protocol Labs)
+    Dweb,
+    /// ipfs.io gateway
+    #[serde(rename = "ipfs_io")]
+    IpfsIo,
 }
 
 fn default_image_source() -> String {
@@ -232,6 +255,7 @@ impl Default for ImageSourceConfig {
             source: default_image_source(),
             iiif_base_url: None,
             iiif_size: default_iiif_size(),
+            gateways: Vec::new(),
         }
     }
 }
