@@ -108,6 +108,8 @@ pub struct CollectionWriter {
     bitmap_size: BitmapSize,
     /// HCF index size
     hcf_index_size: HcfIndexSize,
+    /// Hide rarity rankings in the UI
+    hide_rarity: bool,
 }
 
 impl CollectionWriter {
@@ -121,6 +123,27 @@ impl CollectionWriter {
         total_hcf_size: u64,
         max_image_size: u32,
     ) -> Option<Self> {
+        Self::with_options(
+            sources,
+            hcf_metadata,
+            total_trait_values,
+            total_hcf_size,
+            max_image_size,
+            false,
+        )
+    }
+
+    /// Create a new collection writer with additional options.
+    ///
+    /// Returns None if total_trait_values exceeds 512.
+    pub fn with_options(
+        sources: SourcesSection,
+        hcf_metadata: HcfMetadata,
+        total_trait_values: usize,
+        total_hcf_size: u64,
+        max_image_size: u32,
+        hide_rarity: bool,
+    ) -> Option<Self> {
         let bitmap_size = BitmapSize::for_count(total_trait_values)?;
         let hcf_index_size = HcfIndexSize::for_sizes(total_hcf_size, max_image_size);
 
@@ -132,6 +155,7 @@ impl CollectionWriter {
             hcf_metadata,
             bitmap_size,
             hcf_index_size,
+            hide_rarity,
         })
     }
 
@@ -279,6 +303,9 @@ impl CollectionWriter {
             self.hcf_index_size,
             self.sources.count() as u8,
         );
+        if self.hide_rarity {
+            header.flags |= viewer_binary::FLAG_HIDE_RARITY;
+        }
         header.string_table_offset = string_table_offset;
         header.trait_schema_offset = trait_schema_offset;
         header.trait_index_offset = trait_index_offset;

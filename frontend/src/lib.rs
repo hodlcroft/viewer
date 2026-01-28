@@ -101,6 +101,8 @@ pub struct CollectionData {
     /// Parsed header info
     pub token_count: u32,
     pub trait_count: u8,
+    /// Whether to hide rarity rankings in the UI
+    pub hide_rarity: bool,
     /// Sprite metadata
     pub sprite_thumb_width: u16,
     pub sprite_thumb_height: u16,
@@ -338,6 +340,7 @@ impl CollectionData {
             raw: Arc::new(data),
             token_count: header.token_count,
             trait_count: header.trait_count,
+            hide_rarity: header.hide_rarity(),
             sprite_thumb_width: sprite_meta.thumb_width,
             sprite_thumb_height: sprite_meta.thumb_height,
             sprite_grid_columns: sprite_meta.grid_columns,

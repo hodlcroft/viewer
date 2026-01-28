@@ -11,6 +11,9 @@ pub const HEADER_SIZE: usize = 128;
 /// Feature flag: Collection has multiple sources, tokens include source_index field.
 pub const FLAG_MULTI_SOURCE: u16 = 1 << 0;
 
+/// Feature flag: Hide rarity rankings in the UI.
+pub const FLAG_HIDE_RARITY: u16 = 1 << 1;
+
 /// Header structure for collection.bin files.
 ///
 /// All multi-byte integers are little-endian.
@@ -100,6 +103,11 @@ impl Header {
     /// Check if this collection has multiple sources.
     pub fn is_multi_source(&self) -> bool {
         self.flags & FLAG_MULTI_SOURCE != 0
+    }
+
+    /// Check if rarity rankings should be hidden.
+    pub fn hide_rarity(&self) -> bool {
+        self.flags & FLAG_HIDE_RARITY != 0
     }
 
     /// Get the bitmap size enum.

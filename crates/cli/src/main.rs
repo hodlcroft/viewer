@@ -276,12 +276,13 @@ async fn cmd_sync_cardano(
             max_dimension: 2048,
         };
 
-        let mut writer = CollectionWriter::new(
+        let mut writer = CollectionWriter::with_options(
             sources,
             hcf_metadata,
             analysis.total_values(),
             0, // total_hcf_size unknown yet
             0, // max_image_size unknown yet
+            config.rarity.hide,
         )
         .ok_or_else(|| anyhow::anyhow!("Too many trait values for binary format"))?;
 
@@ -531,12 +532,13 @@ async fn cmd_sync_cardano(
             max_dimension: 2048,
         };
 
-        let mut writer = CollectionWriter::new(
+        let mut writer = CollectionWriter::with_options(
             sources,
             hcf_metadata,
             analysis.total_values(),
             hcf_result.total_size,
             hcf_result.max_image_size,
+            config.rarity.hide,
         )
         .ok_or_else(|| anyhow::anyhow!("Too many trait values for binary format"))?;
 

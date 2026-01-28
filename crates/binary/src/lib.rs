@@ -38,7 +38,7 @@ mod traits;
 pub use bitmap::BitmapSize;
 pub use error::BinaryFormatError;
 pub use hcf::{HcfIndexSize, HcfMetadata, ImageFormat};
-pub use header::{FLAG_MULTI_SOURCE, HEADER_SIZE, Header};
+pub use header::{FLAG_HIDE_RARITY, FLAG_MULTI_SOURCE, HEADER_SIZE, Header};
 pub use sources::{SourceMetadata, SourcesSection};
 pub use sprites::{SPRITE_METADATA_SIZE, SpriteFormat, SpriteMetadata};
 pub use strings::{StringRef, StringTable, StringTableBuilder};

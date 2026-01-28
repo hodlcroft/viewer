@@ -278,6 +278,10 @@ pub struct RarityConfig {
     /// Traits to exclude from rarity score calculation.
     #[serde(default)]
     pub exclude: Vec<String>,
+
+    /// Hide rarity rankings in the viewer UI.
+    #[serde(default)]
+    pub hide: bool,
 }
 
 impl IngestionConfig {

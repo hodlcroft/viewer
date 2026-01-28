@@ -1,0 +1,14 @@
+slug = "kwic"
+name = "KWIC"
+
+[images]
+source = "iiif"
+iiif_base_url = "https://iiif.hodlcroft.com"
+iiif_size = 1686
+
+[traits]
+ignore = []
+
+[rarity]
+hide = true
+exclude = []

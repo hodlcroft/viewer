@@ -159,6 +159,7 @@ pub fn DetailPage() -> impl IntoView {
                                             next_token=next_token
                                             traits=collection.traits.clone()
                                             hcf=collection.hcf.clone()
+                                            hide_rarity=collection.hide_rarity
                                         />
                                     }.into_any()
                                 }
@@ -274,6 +275,7 @@ fn TokenDetail(
     next_token: Option<TokenInfo>,
     traits: Vec<TraitInfo>,
     hcf: Option<HcfInfo>,
+    hide_rarity: bool,
 ) -> impl IntoView {
     let back_url = format!("/{slug}#token-{}", token.index);
     let prev_url = prev_token
@@ -437,8 +439,8 @@ fn TokenDetail(
                     </div>
                 </div>
 
-                // Rarity (only show if we have rarity data)
-                {(token.rarity_rank > 0).then(|| view! {
+                // Rarity (only show if we have rarity data and it's not hidden)
+                {(!hide_rarity && token.rarity_rank > 0).then(|| view! {
                     <div class="tp-section">
                         <div class="tp-row">
                             <span class="tp-label">"Rank"</span>
