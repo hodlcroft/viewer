@@ -1,11 +1,12 @@
-use crate::{CollectionCache, HcfInfo, TokenInfo, TraitInfo, collection_url, fetch_collection, fetch_hcf_image};
+use crate::{CollectionCache, HcfInfo, TokenInfo, TraitInfo, collection_url, fetch_collection, fetch_hcf_image_with_signal};
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::RefCell;
 
-/// Tracks active loading requests to prevent panics on component disposal
+/// Tracks active loading requests (Send+Sync for context)
 #[derive(Clone)]
 struct LoadingTracker {
     /// Current request ID (incremented on each new request)
@@ -22,7 +23,7 @@ impl LoadingTracker {
         }
     }
 
-    /// Start a new loading request, returns the request ID
+    /// Start a new loading request, returns request_id
     fn start_request(&self) -> u64 {
         let id = self.current_request_id.fetch_add(1, Ordering::SeqCst) + 1;
         self.pending_count.update(|c| *c += 1);
@@ -48,6 +49,37 @@ impl LoadingTracker {
     fn current_id(&self) -> u64 {
         self.current_request_id.load(Ordering::SeqCst)
     }
+}
+
+// Thread-local storage for the current AbortController
+// This works because WASM is single-threaded
+thread_local! {
+    static CURRENT_ABORT_CONTROLLER: RefCell<Option<web_sys::AbortController>> = const { RefCell::new(None) };
+}
+
+/// Cancel any in-flight HCF request and create a new abort signal
+fn new_abort_signal() -> web_sys::AbortSignal {
+    CURRENT_ABORT_CONTROLLER.with(|cell| {
+        // Cancel existing request if any
+        if let Some(old) = cell.borrow_mut().take() {
+            old.abort();
+            tracing::debug!("Cancelled previous HCF request");
+        }
+
+        // Create new controller
+        let controller = web_sys::AbortController::new()
+            .expect("AbortController should be available");
+        let signal = controller.signal();
+        *cell.borrow_mut() = Some(controller);
+        signal
+    })
+}
+
+/// Clear the current abort controller (call when request completes)
+fn clear_abort_controller() {
+    CURRENT_ABORT_CONTROLLER.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
 }
 
 #[component]
@@ -278,11 +310,14 @@ fn TokenDetail(
         let img_ref_clone = img_ref.clone();
         let tracker = loading_tracker.clone();
 
+        // Cancel any previous request and get new abort signal
+        let abort_signal = new_abort_signal();
+
         // Start tracking this request
         let request_id = tracker.start_request();
 
         wasm_bindgen_futures::spawn_local(async move {
-            match fetch_hcf_image(&slug_for_fetch, &hcf_info, &location).await {
+            match fetch_hcf_image_with_signal(&slug_for_fetch, &hcf_info, &location, Some(&abort_signal)).await {
                 Ok(blob_url) => {
                     // Check if this request is still current before updating DOM
                     if tracker.current_id() == request_id {
@@ -290,12 +325,16 @@ fn TokenDetail(
                             img.set_src(&blob_url);
                             let _ = img.class_list().add_1("loaded");
                         }
+                        clear_abort_controller();
                     }
                     // Always complete the request to update pending count
                     tracker.complete_request(request_id);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to fetch HCF image: {}", e);
+                    // Don't log aborted requests as warnings
+                    if !e.contains("abort") {
+                        tracing::warn!("Failed to fetch HCF image: {}", e);
+                    }
                     tracker.complete_request(request_id);
                 }
             }

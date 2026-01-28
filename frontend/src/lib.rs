@@ -443,10 +443,21 @@ pub async fn fetch_collection(
 
 /// Fetch a full-resolution image from the HCF bundle using a range request.
 /// Returns an object URL that can be used as an img src.
+/// Optionally accepts an AbortSignal for cancellation.
 pub async fn fetch_hcf_image(
     slug: &str,
     hcf: &HcfInfo,
     location: &HcfLocation,
+) -> Result<String, String> {
+    fetch_hcf_image_with_signal(slug, hcf, location, None).await
+}
+
+/// Fetch a full-resolution image from the HCF bundle with optional abort signal.
+pub async fn fetch_hcf_image_with_signal(
+    slug: &str,
+    hcf: &HcfInfo,
+    location: &HcfLocation,
+    abort_signal: Option<&web_sys::AbortSignal>,
 ) -> Result<String, String> {
     // Build the URL to the correct shard
     let shard_url = format!(
@@ -471,12 +482,24 @@ pub async fn fetch_hcf_image(
         "Fetching HCF image"
     );
 
-    // Fetch with range header
-    let response = gloo_net::http::Request::get(&shard_url)
-        .header("Range", &range_header)
+    // Fetch with range header and optional abort signal
+    let mut request = gloo_net::http::Request::get(&shard_url)
+        .header("Range", &range_header);
+
+    if let Some(signal) = abort_signal {
+        request = request.abort_signal(Some(signal));
+    }
+
+    let response = request
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch image: {e}"))?;
+        .map_err(|e| {
+            // Check if this was an abort
+            if e.to_string().contains("abort") {
+                return "Request aborted".to_string();
+            }
+            format!("Failed to fetch image: {e}")
+        })?;
 
     tracing::info!(
         status = response.status(),
@@ -521,7 +544,7 @@ pub async fn fetch_hcf_image(
     let url = web_sys::Url::create_object_url_with_blob(&blob)
         .map_err(|e| format!("Failed to create object URL: {:?}", e))?;
 
-    tracing::info!(blob_url = %url, "Created blob URL for HCF image (v2)");
+    tracing::info!(blob_url = %url, "Created blob URL for HCF image");
 
     Ok(url)
 }
