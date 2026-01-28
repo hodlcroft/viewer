@@ -16,27 +16,47 @@ use tracing::{debug, warn};
 #[derive(Debug, Clone)]
 pub struct Gateway {
     /// Gateway name for logging
-    pub name: &'static str,
+    pub name: String,
     /// URL template with {cid} placeholder
-    pub url_template: &'static str,
+    pub url_template: String,
+    /// Optional authentication token (e.g., Pinata gateway key)
+    pub token: Option<String>,
     /// Current failure count (for deprioritization)
     failures: Arc<AtomicU32>,
 }
 
 impl Gateway {
-    pub fn new(name: &'static str, url_template: &'static str) -> Self {
+    pub fn new(name: &str, url_template: &str) -> Self {
         Self {
-            name,
-            url_template,
+            name: name.to_string(),
+            url_template: url_template.to_string(),
+            token: None,
+            failures: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    /// Create a gateway with an authentication token.
+    ///
+    /// For Pinata dedicated gateways, the token is appended as `?pinataGatewayToken=<token>`.
+    pub fn new_with_token(name: &str, url_template: &str, token: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            url_template: url_template.to_string(),
+            token: Some(token.to_string()),
             failures: Arc::new(AtomicU32::new(0)),
         }
     }
 
     pub fn build_url(&self, cid: &str, path: Option<&str>) -> String {
         let base = self.url_template.replace("{cid}", cid);
-        match path {
+        let url = match path {
             Some(p) => format!("{}/{}", base, p),
             None => base,
+        };
+        // Append token as query parameter if present
+        match &self.token {
+            Some(token) => format!("{}?pinataGatewayToken={}", url, token),
+            None => url,
         }
     }
 
@@ -54,11 +74,30 @@ impl Gateway {
 }
 
 /// Default IPFS gateways in priority order.
+///
+/// If PINATA_GATEWAY_HOST and PINATA_GATEWAY_KEY are set in the environment,
+/// uses the dedicated Pinata gateway. Otherwise falls back to public gateway.
 pub fn default_gateways() -> Vec<Gateway> {
-    vec![Gateway::new(
-        "Pinata",
-        "https://gateway.pinata.cloud/ipfs/{cid}",
-    )]
+    // Check for dedicated Pinata gateway configuration
+    if let (Ok(host), Ok(key)) = (
+        std::env::var("PINATA_GATEWAY_HOST"),
+        std::env::var("PINATA_GATEWAY_KEY"),
+    ) {
+        tracing::info!("Using dedicated Pinata gateway: {}", host);
+        vec![Gateway::new_with_token(
+            "Pinata (dedicated)",
+            &format!("https://{}/ipfs/{{cid}}", host),
+            &key,
+        )]
+    } else {
+        tracing::debug!(
+            "Using public Pinata gateway (set PINATA_GATEWAY_HOST and PINATA_GATEWAY_KEY for dedicated)"
+        );
+        vec![Gateway::new(
+            "Pinata",
+            "https://gateway.pinata.cloud/ipfs/{cid}",
+        )]
+    }
 }
 
 /// Fetched image data with format detection.
@@ -140,7 +179,7 @@ impl IpfsFetcher {
     pub fn new(concurrency: usize) -> Self {
         Self {
             client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(90))
                 .build()
                 .expect("Failed to create HTTP client"),
             gateways: default_gateways(),
@@ -223,20 +262,48 @@ impl IpfsFetcher {
             .map(|gateway| {
                 let url = gateway.build_url(cid, path);
                 let client = self.client.clone();
-                let gateway_name = gateway.name;
+                let gateway_name = gateway.name.clone();
                 let gateway = (*gateway).clone();
 
                 Box::pin(async move {
-                    match Self::fetch_from_gateway(&client, &url, gateway_name).await {
-                        Ok(image) => {
-                            gateway.record_success();
-                            Ok(image)
-                        }
-                        Err(e) => {
-                            gateway.record_failure();
-                            Err(e)
+                    const MAX_RETRIES: u32 = 3;
+                    let mut last_error = None;
+
+                    for attempt in 0..MAX_RETRIES {
+                        match Self::fetch_from_gateway(&client, &url, &gateway_name).await {
+                            Ok(image) => {
+                                gateway.record_success();
+                                return Ok(image);
+                            }
+                            Err(FetchError::RateLimited {
+                                retry_after_secs, ..
+                            }) => {
+                                // Backoff on rate limit
+                                let delay = std::cmp::max(retry_after_secs, 1 << attempt);
+                                warn!(
+                                    gateway = %gateway_name,
+                                    attempt = attempt + 1,
+                                    delay_secs = delay,
+                                    "Rate limited, backing off"
+                                );
+                                tokio::time::sleep(Duration::from_secs(delay)).await;
+                                last_error = Some(FetchError::RateLimited {
+                                    gateway: gateway_name.clone(),
+                                    retry_after_secs,
+                                });
+                            }
+                            Err(e) => {
+                                gateway.record_failure();
+                                return Err(e);
+                            }
                         }
                     }
+
+                    gateway.record_failure();
+                    Err(last_error.unwrap_or_else(|| FetchError::Gateway {
+                        gateway: gateway_name,
+                        message: "Max retries exceeded".to_string(),
+                    }))
                 })
             })
             .collect();
@@ -255,7 +322,7 @@ impl IpfsFetcher {
         debug!("Fetching from {}: {}", gateway_name, url);
 
         let response = client.get(url).send().await.map_err(|e| {
-            debug!("Gateway {} request failed: {}", gateway_name, e);
+            warn!(gateway = %gateway_name, error = %e, url = %url, "Gateway connection failed");
             FetchError::Gateway {
                 gateway: gateway_name.to_string(),
                 message: e.to_string(),
@@ -285,6 +352,7 @@ impl IpfsFetcher {
         }
 
         if !status.is_success() {
+            warn!(gateway = %gateway_name, status = %status, url = %url, "Gateway request failed");
             return Err(FetchError::Gateway {
                 gateway: gateway_name.to_string(),
                 message: format!("HTTP {}", status),

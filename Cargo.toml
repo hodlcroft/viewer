@@ -67,11 +67,11 @@ gloo-timers = "0.3"
 js-sys = "0.3"
 
 # shared-crates (all pinned to same rev)
-worker_utils = { git = "https://github.com/defrag-au/shared-crates", package = "worker_utils", rev = "2d68fcc" }
-worker_stack = { git = "https://github.com/defrag-au/shared-crates", package = "worker_stack", rev = "2d68fcc" }
-test_utils = { git = "https://github.com/defrag-au/shared-crates", package = "test_utils", rev = "2d68fcc" }
-cnft_tools = { git = "https://github.com/defrag-au/shared-crates", package = "cnft_tools", rev = "2d68fcc" }
+worker_utils = { git = "https://github.com/defrag-au/shared-crates", package = "worker_utils", rev = "ff5db20" }
+worker_stack = { git = "https://github.com/defrag-au/shared-crates", package = "worker_stack", rev = "ff5db20" }
+test_utils = { git = "https://github.com/defrag-au/shared-crates", package = "test_utils", rev = "ff5db20" }
+cnft_tools = { git = "https://github.com/defrag-au/shared-crates", package = "cnft_tools", rev = "ff5db20" }
 
 # Local overrides for development
 [patch."https://github.com/defrag-au/shared-crates"]
-cnft_tools = { path = "/Users/damo/code/defrag/shared-crates/cnft-tools" }
+# cnft_tools = { path = "/Users/damo/code/defrag/shared-crates/cnft-tools" }

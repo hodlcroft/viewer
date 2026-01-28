@@ -42,7 +42,7 @@ impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
             build_dir: PathBuf::from(".build"),
-            fetch_concurrency: 20,
+            fetch_concurrency: 5,
             sprite_max_sheet_size: 1024, // GPU-friendly 4x4 grid, auto-detect cell size from first image
             hcf_shard_size: 250 * 1024 * 1024, // 250 MB
             hcf_max_dimension: 2048,

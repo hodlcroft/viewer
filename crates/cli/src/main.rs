@@ -370,8 +370,10 @@ async fn cmd_sync_cardano(
 
         // Abort if any images failed
         if !result.failed.is_empty() {
+            tracing::error!("Failed to fetch {} images", result.failed.len());
             println!("\nFailed to fetch {} images:", result.failed.len());
             for id in &result.failed {
+                tracing::error!("  Failed image: {}", id);
                 println!("  - {}", id);
             }
             anyhow::bail!(
