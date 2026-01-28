@@ -26,10 +26,12 @@ impl SourceMetadata {
     pub const SIZE: usize = 12; // 2 + 2 + 4 + 4
 
     /// Serialize to bytes.
+    ///
+    /// Note: StringRefs are stored as u16 in source metadata (chain/id are always short strings).
     pub fn to_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
-        buf[0..2].copy_from_slice(&self.chain.0.to_le_bytes());
-        buf[2..4].copy_from_slice(&self.id.0.to_le_bytes());
+        buf[0..2].copy_from_slice(&(self.chain.0 as u16).to_le_bytes());
+        buf[2..4].copy_from_slice(&(self.id.0 as u16).to_le_bytes());
         buf[4..8].copy_from_slice(&self.token_count.to_le_bytes());
         buf[8..12].copy_from_slice(&self.synced_at.to_le_bytes());
         buf
@@ -41,8 +43,8 @@ impl SourceMetadata {
             return None;
         }
         Some(Self {
-            chain: StringRef(u16::from_le_bytes([buf[0], buf[1]])),
-            id: StringRef(u16::from_le_bytes([buf[2], buf[3]])),
+            chain: StringRef::from_u16(u16::from_le_bytes([buf[0], buf[1]])),
+            id: StringRef::from_u16(u16::from_le_bytes([buf[2], buf[3]])),
             token_count: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
             synced_at: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
         })

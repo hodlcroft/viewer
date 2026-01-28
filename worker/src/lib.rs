@@ -86,7 +86,7 @@ struct StringTableInfo {
 #[derive(Serialize)]
 struct TraitInfo {
     name: String,
-    name_ref: u16,
+    name_ref: u32,
     value_count: usize,
     values: Vec<String>,
 }
@@ -192,7 +192,7 @@ fn parse_debug_info(data: &[u8]) -> std::result::Result<DebugInfo, String> {
         let has_custom_name = name_ref & 0x8000 != 0;
         let name_ref_masked = name_ref & 0x7FFF;
         let name = if has_custom_name {
-            read_string(string_table_data, name_ref_masked)
+            read_string(string_table_data, name_ref_masked as u32)
         } else {
             format!("#{}", name_ref)
         };
@@ -235,7 +235,7 @@ fn parse_debug_info(data: &[u8]) -> std::result::Result<DebugInfo, String> {
     })
 }
 
-fn read_string(table: &[u8], offset: u16) -> String {
+fn read_string(table: &[u8], offset: u32) -> String {
     read_string_at(table, offset as usize)
 }
 

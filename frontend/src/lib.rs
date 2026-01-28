@@ -283,7 +283,7 @@ impl CollectionData {
             // Resolve name - high bit indicates custom name vs pattern
             let name = if name_ref & 0x8000 != 0 {
                 // Custom name from string table
-                read_string(string_table_data, name_ref & 0x7FFF)
+                read_string(string_table_data, (name_ref & 0x7FFF) as u32)
             } else {
                 // Pattern: "#{n}" where n is the name_ref value
                 format!("#{}", name_ref)
@@ -373,8 +373,8 @@ impl CollectionData {
     }
 }
 
-/// Read a null-terminated string from the string table (u16 offset)
-fn read_string(table: &[u8], offset: u16) -> String {
+/// Read a null-terminated string from the string table
+fn read_string(table: &[u8], offset: u32) -> String {
     read_string_at(table, offset as usize)
 }
 

@@ -1,35 +1,84 @@
 //! Deduplicated string table for trait names and values.
 //!
-//! Strings are stored once and referenced by 16-bit offsets, enabling
-//! compact storage and zero-copy access.
+//! Strings are stored once and referenced by offsets. The offset size can be
+//! configured via `StringRefSize` - U16 for tables up to 64KB, U32 for larger.
 
-use crate::BinaryFormatError;
+use crate::{BinaryFormatError, StringRefSize};
 use std::collections::HashMap;
 
-/// Reference to a string in the string table (16-bit offset).
+/// Reference to a string in the string table.
+///
+/// Stores a 32-bit offset internally, but serialization size depends on
+/// the collection's `StringRefSize` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StringRef(pub u16);
+pub struct StringRef(pub u32);
 
 impl StringRef {
     /// The null/empty string reference.
     pub const EMPTY: StringRef = StringRef(0);
+
+    /// Create from a u16 offset (for backwards compatibility).
+    pub const fn from_u16(offset: u16) -> Self {
+        StringRef(offset as u32)
+    }
+
+    /// Get as u16 (panics if > u16::MAX).
+    pub fn as_u16(self) -> u16 {
+        self.0 as u16
+    }
+
+    /// Serialize to bytes based on the ref size.
+    pub fn to_bytes(self, size: StringRefSize) -> Vec<u8> {
+        match size {
+            StringRefSize::U16 => (self.0 as u16).to_le_bytes().to_vec(),
+            StringRefSize::U32 => self.0.to_le_bytes().to_vec(),
+        }
+    }
+
+    /// Deserialize from bytes based on the ref size.
+    pub fn from_bytes(bytes: &[u8], size: StringRefSize) -> Option<Self> {
+        match size {
+            StringRefSize::U16 => {
+                if bytes.len() < 2 {
+                    return None;
+                }
+                Some(StringRef(u16::from_le_bytes([bytes[0], bytes[1]]) as u32))
+            }
+            StringRefSize::U32 => {
+                if bytes.len() < 4 {
+                    return None;
+                }
+                Some(StringRef(u32::from_le_bytes([
+                    bytes[0], bytes[1], bytes[2], bytes[3],
+                ])))
+            }
+        }
+    }
 }
 
 /// Builder for constructing a deduplicated string table.
 #[derive(Clone)]
 pub struct StringTableBuilder {
     /// Map from string content to offset
-    offsets: HashMap<String, u16>,
+    offsets: HashMap<String, u32>,
     /// Concatenated string data (null-terminated)
     data: Vec<u8>,
+    /// Maximum reference size (determines max table size)
+    ref_size: StringRefSize,
 }
 
 impl StringTableBuilder {
-    /// Create a new builder.
+    /// Create a new builder with U16 references (default, up to 64KB).
     pub fn new() -> Self {
+        Self::with_ref_size(StringRefSize::U16)
+    }
+
+    /// Create a new builder with the specified reference size.
+    pub fn with_ref_size(ref_size: StringRefSize) -> Self {
         let mut builder = Self {
             offsets: HashMap::new(),
             data: Vec::new(),
+            ref_size,
         };
         // Reserve offset 0 for empty string
         builder.data.push(0);
@@ -46,18 +95,20 @@ impl StringTableBuilder {
         }
 
         let offset = self.data.len();
-        if offset > u16::MAX as usize {
+        let max_size = self.ref_size.max_size();
+
+        if offset > max_size {
             return Err(BinaryFormatError::StringTableOverflow(format!(
-                "string table data exceeds 64KB at {} bytes",
-                offset
+                "string table data exceeds {} bytes at {} bytes (consider using StringRefSize::U32)",
+                max_size, offset
             )));
         }
 
         self.data.extend_from_slice(s.as_bytes());
         self.data.push(0); // null terminator
 
-        self.offsets.insert(s.to_string(), offset as u16);
-        Ok(StringRef(offset as u16))
+        self.offsets.insert(s.to_string(), offset as u32);
+        Ok(StringRef(offset as u32))
     }
 
     /// Get the number of unique strings.
@@ -70,16 +121,22 @@ impl StringTableBuilder {
         self.offsets.len() <= 1 // Only the empty string
     }
 
+    /// Get the current data size in bytes.
+    pub fn data_size(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Get the configured reference size.
+    pub fn ref_size(&self) -> StringRefSize {
+        self.ref_size
+    }
+
     /// Build the final string table.
     pub fn build(self) -> Result<StringTable, BinaryFormatError> {
-        if self.offsets.len() > u16::MAX as usize {
-            return Err(BinaryFormatError::StringTableOverflow(format!(
-                "too many strings: {} (max 65535)",
-                self.offsets.len()
-            )));
-        }
-
-        Ok(StringTable { data: self.data })
+        Ok(StringTable {
+            data: self.data,
+            ref_size: self.ref_size,
+        })
     }
 }
 
@@ -93,12 +150,18 @@ impl Default for StringTableBuilder {
 #[derive(Debug, Clone)]
 pub struct StringTable {
     data: Vec<u8>,
+    ref_size: StringRefSize,
 }
 
 impl StringTable {
-    /// Create from raw data bytes.
+    /// Create from raw data bytes with U16 references (default).
     pub fn from_bytes(data: Vec<u8>) -> Self {
-        Self { data }
+        Self::from_bytes_with_ref_size(data, StringRefSize::U16)
+    }
+
+    /// Create from raw data bytes with the specified reference size.
+    pub fn from_bytes_with_ref_size(data: Vec<u8>, ref_size: StringRefSize) -> Self {
+        Self { data, ref_size }
     }
 
     /// Get a string by reference.
@@ -124,6 +187,11 @@ impl StringTable {
         &self.data
     }
 
+    /// Get the reference size.
+    pub fn ref_size(&self) -> StringRefSize {
+        self.ref_size
+    }
+
     /// Serialize to bytes.
     ///
     /// Format: [data_len: u32][data: bytes]
@@ -134,8 +202,13 @@ impl StringTable {
         buf
     }
 
-    /// Deserialize from bytes.
+    /// Deserialize from bytes with U16 references (default).
     pub fn from_serialized(buf: &[u8]) -> Option<Self> {
+        Self::from_serialized_with_ref_size(buf, StringRefSize::U16)
+    }
+
+    /// Deserialize from bytes with the specified reference size.
+    pub fn from_serialized_with_ref_size(buf: &[u8], ref_size: StringRefSize) -> Option<Self> {
         if buf.len() < 4 {
             return None;
         }
@@ -145,6 +218,7 @@ impl StringTable {
         }
         Some(Self {
             data: buf[4..4 + len].to_vec(),
+            ref_size,
         })
     }
 }
@@ -188,6 +262,49 @@ mod tests {
         let bytes = table.to_bytes();
         let restored = StringTable::from_serialized(&bytes).unwrap();
 
-        assert_eq!(table.data, restored.data);
+        assert_eq!(table.data(), restored.data());
+    }
+
+    #[test]
+    fn test_string_ref_serialization() {
+        let r = StringRef(12345);
+
+        // U16 serialization
+        let bytes = r.to_bytes(StringRefSize::U16);
+        assert_eq!(bytes.len(), 2);
+        let restored = StringRef::from_bytes(&bytes, StringRefSize::U16).unwrap();
+        assert_eq!(restored.0, 12345);
+
+        // U32 serialization
+        let bytes = r.to_bytes(StringRefSize::U32);
+        assert_eq!(bytes.len(), 4);
+        let restored = StringRef::from_bytes(&bytes, StringRefSize::U32).unwrap();
+        assert_eq!(restored.0, 12345);
+    }
+
+    #[test]
+    fn test_string_ref_large_offset() {
+        // Test offset larger than u16::MAX
+        let r = StringRef(100_000);
+
+        // U32 serialization works
+        let bytes = r.to_bytes(StringRefSize::U32);
+        let restored = StringRef::from_bytes(&bytes, StringRefSize::U32).unwrap();
+        assert_eq!(restored.0, 100_000);
+
+        // U16 serialization truncates (as expected)
+        let bytes = r.to_bytes(StringRefSize::U16);
+        let restored = StringRef::from_bytes(&bytes, StringRefSize::U16).unwrap();
+        assert_ne!(restored.0, 100_000); // Truncated
+    }
+
+    #[test]
+    fn test_builder_with_u32_ref_size() {
+        let mut builder = StringTableBuilder::with_ref_size(StringRefSize::U32);
+        assert_eq!(builder.ref_size(), StringRefSize::U32);
+
+        builder.add("test").unwrap();
+        let table = builder.build().unwrap();
+        assert_eq!(table.ref_size(), StringRefSize::U32);
     }
 }

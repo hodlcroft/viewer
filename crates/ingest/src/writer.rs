@@ -21,7 +21,7 @@ use std::path::Path;
 use thiserror::Error;
 use viewer_binary::{
     BinaryFormatError, BitmapSize, HEADER_SIZE, HcfIndexSize, HcfMetadata, Header, SourcesSection,
-    StringTableBuilder, TokenEntry, TraitSchemaBuilder,
+    StringRefSize, StringTableBuilder, TokenEntry, TraitSchemaBuilder,
 };
 
 use crate::bundle::ImageLocation;
@@ -76,8 +76,8 @@ pub struct TokenData {
 /// Internal token data with resolved string references.
 #[derive(Debug, Clone)]
 struct ResolvedToken {
-    /// Name string reference
-    name_ref: u16,
+    /// Name string reference (with high bit set for custom names)
+    name_ref: u32,
     /// Asset ID stored as raw bytes (not in string table - they're unique anyway)
     asset_id: String,
     /// Trait values as (trait_index, value_index) pairs
@@ -115,7 +115,7 @@ pub struct CollectionWriter {
 impl CollectionWriter {
     /// Create a new collection writer.
     ///
-    /// Returns None if total_trait_values exceeds 512.
+    /// Returns None if total_trait_values exceeds the maximum supported.
     pub fn new(
         sources: SourcesSection,
         hcf_metadata: HcfMetadata,
@@ -135,7 +135,7 @@ impl CollectionWriter {
 
     /// Create a new collection writer with additional options.
     ///
-    /// Returns None if total_trait_values exceeds 512.
+    /// Returns None if total_trait_values exceeds the maximum supported.
     pub fn with_options(
         sources: SourcesSection,
         hcf_metadata: HcfMetadata,
@@ -147,8 +147,9 @@ impl CollectionWriter {
         let bitmap_size = BitmapSize::for_count(total_trait_values)?;
         let hcf_index_size = HcfIndexSize::for_sizes(total_hcf_size, max_image_size);
 
+        // Use U32 capacity during building, downgrade to U16 at write time if it fits
         Some(Self {
-            strings: StringTableBuilder::new(),
+            strings: StringTableBuilder::with_ref_size(StringRefSize::U32),
             traits: TraitSchemaBuilder::new(),
             tokens: Vec::new(),
             sources,
@@ -179,12 +180,26 @@ impl CollectionWriter {
     ///
     /// Returns an error if the name cannot be added to the string table.
     pub fn add_token(&mut self, token: TokenData) -> Result<(), WriterError> {
-        // Add name to string table (with high bit set to indicate custom name)
-        let name_ref = self.strings.add(&token.name)?.0 | 0x8000;
+        // Add name to string table
+        let string_ref = self.strings.add(&token.name)?;
+
+        // Token name_ref uses u16 with high bit as custom name flag
+        // The offset must fit in 15 bits (max 32KB into string table)
+        if string_ref.0 > 0x7FFF {
+            return Err(WriterError::BinaryFormat(
+                BinaryFormatError::StringTableOverflow(format!(
+                    "token name offset {} exceeds 32KB limit for name_ref field",
+                    string_ref.0
+                )),
+            ));
+        }
+
+        // Set high bit to indicate custom name
+        let name_ref = (string_ref.0 as u16) | 0x8000;
 
         // Asset ID is stored separately (not in string table - they're unique anyway)
         self.tokens.push(ResolvedToken {
-            name_ref,
+            name_ref: name_ref as u32, // Store as u32 internally, serialized as u16
             asset_id: token.asset_id,
             traits: token.traits,
             rarity_rank: token.rarity_rank,
@@ -295,13 +310,17 @@ impl CollectionWriter {
         let asset_id_index_offset = sources_offset + sources_bytes.len() as u32;
         let asset_id_index_bytes = self.build_asset_id_index();
 
+        // Determine string ref size based on actual string table size
+        let string_ref_size = StringRefSize::for_size(string_table.data().len());
+
         // Build header
-        let mut header = Header::new(
+        let mut header = Header::with_string_ref_size(
             self.tokens.len() as u32,
             self.traits.trait_count() as u8,
             self.bitmap_size,
             self.hcf_index_size,
             self.sources.count() as u8,
+            string_ref_size,
         );
         if self.hide_rarity {
             header.flags |= viewer_binary::FLAG_HIDE_RARITY;
@@ -346,7 +365,7 @@ impl CollectionWriter {
                 sprite_y: token.sprite.y,
                 rarity_rank: token.rarity_rank,
                 rarity_score: token.rarity_score,
-                name_ref: token.name_ref,
+                name_ref: token.name_ref as u16, // Safe: validated in add_token
             };
 
             // Write fixed fields
