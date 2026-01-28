@@ -5,6 +5,12 @@
 
 use crate::{BitmapSize, HcfIndexSize};
 
+/// Bit mask for custom name flag in name_ref (high bit of u32)
+pub const NAME_REF_CUSTOM_FLAG: u32 = 0x8000_0000;
+
+/// Bit mask for string table offset in name_ref (lower 31 bits)
+pub const NAME_REF_OFFSET_MASK: u32 = 0x7FFF_FFFF;
+
 /// Fixed fields in a token entry (before variable-size data).
 ///
 /// Layout (single-source):
@@ -13,8 +19,8 @@ use crate::{BitmapSize, HcfIndexSize};
 /// - sprite_y: u8
 /// - rarity_rank: u16
 /// - rarity_score: u16 (fixed-point, score * 100)
-/// - name_ref: u16
-/// Total fixed: 10 bytes
+/// - name_ref: u32
+/// Total fixed: 12 bytes
 ///
 /// Layout (multi-source, FLAG_MULTI_SOURCE set):
 /// - source_index: u8 (added at start)
@@ -23,10 +29,10 @@ use crate::{BitmapSize, HcfIndexSize};
 /// - sprite_y: u8
 /// - rarity_rank: u16
 /// - rarity_score: u16 (fixed-point, score * 100)
-/// - name_ref: u16
-/// Total fixed: 11 bytes
-pub const TOKEN_FIXED_SIZE: usize = 10;
-pub const TOKEN_FIXED_SIZE_MULTI_SOURCE: usize = 11;
+/// - name_ref: u32
+/// Total fixed: 13 bytes
+pub const TOKEN_FIXED_SIZE: usize = 12;
+pub const TOKEN_FIXED_SIZE_MULTI_SOURCE: usize = 13;
 
 /// A single token entry in the token table.
 #[derive(Debug, Clone)]
@@ -44,10 +50,10 @@ pub struct TokenEntry {
     pub rarity_rank: u16,
     pub rarity_score: u16, // Fixed-point: actual_score * 100
 
-    // Name reference (2 bytes)
-    // High bit set: index into custom names table
+    // Name reference (4 bytes)
+    // High bit set: offset into string table for custom name
     // Otherwise: token number for "{Collection} #{n}" pattern
-    pub name_ref: u16,
+    pub name_ref: u32,
     // Variable-size attributes bitmap (stored separately)
     // Variable-size HCF location (stored separately)
 }
@@ -81,7 +87,7 @@ impl TokenEntry {
         buf[offset + 3] = self.sprite_y;
         buf[offset + 4..offset + 6].copy_from_slice(&self.rarity_rank.to_le_bytes());
         buf[offset + 6..offset + 8].copy_from_slice(&self.rarity_score.to_le_bytes());
-        buf[offset + 8..offset + 10].copy_from_slice(&self.name_ref.to_le_bytes());
+        buf[offset + 8..offset + 12].copy_from_slice(&self.name_ref.to_le_bytes());
     }
 
     /// Read fixed fields from bytes.
@@ -100,7 +106,12 @@ impl TokenEntry {
             sprite_y: buf[offset + 3],
             rarity_rank: u16::from_le_bytes([buf[offset + 4], buf[offset + 5]]),
             rarity_score: u16::from_le_bytes([buf[offset + 6], buf[offset + 7]]),
-            name_ref: u16::from_le_bytes([buf[offset + 8], buf[offset + 9]]),
+            name_ref: u32::from_le_bytes([
+                buf[offset + 8],
+                buf[offset + 9],
+                buf[offset + 10],
+                buf[offset + 11],
+            ]),
         }
     }
 }
@@ -170,23 +181,23 @@ mod tests {
 
     #[test]
     fn test_entry_size_single_source() {
-        // U64 bitmap (8) + fixed (10) = 18
-        assert_eq!(TokenEntry::entry_size(BitmapSize::U64, false), 18);
+        // U64 bitmap (8) + fixed (12) = 20
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U64, false), 20);
 
-        // U128 bitmap (16) + fixed (10) = 26
-        assert_eq!(TokenEntry::entry_size(BitmapSize::U128, false), 26);
+        // U128 bitmap (16) + fixed (12) = 28
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U128, false), 28);
 
-        // U256 bitmap (32) + fixed (10) = 42
-        assert_eq!(TokenEntry::entry_size(BitmapSize::U256, false), 42);
+        // U256 bitmap (32) + fixed (12) = 44
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U256, false), 44);
     }
 
     #[test]
     fn test_entry_size_multi_source() {
-        // U64 bitmap (8) + fixed (11) = 19
-        assert_eq!(TokenEntry::entry_size(BitmapSize::U64, true), 19);
+        // U64 bitmap (8) + fixed (13) = 21
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U64, true), 21);
 
-        // U128 bitmap (16) + fixed (11) = 27
-        assert_eq!(TokenEntry::entry_size(BitmapSize::U128, true), 27);
+        // U128 bitmap (16) + fixed (13) = 29
+        assert_eq!(TokenEntry::entry_size(BitmapSize::U128, true), 29);
     }
 
     #[test]

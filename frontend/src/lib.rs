@@ -249,7 +249,7 @@ impl CollectionData {
         let bitmap_bytes = bitmap_size.byte_size();
         let token_table_start = header.token_table_offset as usize;
 
-        let token_fixed_size = 10; // 2+1+1+2+2+2 = 10 bytes fixed
+        let token_fixed_size = viewer_binary::TOKEN_FIXED_SIZE;
         let token_entry_size = token_fixed_size + bitmap_bytes;
 
         // Get asset IDs from the asset ID index
@@ -265,8 +265,8 @@ impl CollectionData {
             let sprite_y = entry[3];
             let rarity_rank = u16::from_le_bytes([entry[4], entry[5]]);
             let _rarity_score = u16::from_le_bytes([entry[6], entry[7]]);
-            let name_ref = u16::from_le_bytes([entry[8], entry[9]]);
-            let trait_bitmap = entry[10..10 + bitmap_bytes].to_vec();
+            let name_ref = u32::from_le_bytes([entry[8], entry[9], entry[10], entry[11]]);
+            let trait_bitmap = entry[token_fixed_size..token_fixed_size + bitmap_bytes].to_vec();
 
             // Read asset ID from asset ID index
             // Format: [offset_table: u32 * token_count][string_data]
@@ -281,9 +281,9 @@ impl CollectionData {
             let asset_id = read_string_at(&data[asset_id_index_start..], asset_id_str_offset);
 
             // Resolve name - high bit indicates custom name vs pattern
-            let name = if name_ref & 0x8000 != 0 {
+            let name = if name_ref & viewer_binary::NAME_REF_CUSTOM_FLAG != 0 {
                 // Custom name from string table
-                read_string(string_table_data, (name_ref & 0x7FFF) as u32)
+                read_string(string_table_data, name_ref & viewer_binary::NAME_REF_OFFSET_MASK)
             } else {
                 // Pattern: "#{n}" where n is the name_ref value
                 format!("#{}", name_ref)

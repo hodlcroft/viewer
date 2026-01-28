@@ -45,8 +45,8 @@ pub use sprites::{SPRITE_METADATA_SIZE, SpriteFormat, SpriteMetadata};
 pub use string_ref_size::StringRefSize;
 pub use strings::{StringRef, StringTable, StringTableBuilder};
 pub use tokens::{
-    TOKEN_FIXED_SIZE, TOKEN_FIXED_SIZE_MULTI_SOURCE, TokenEntry, read_hcf_location,
-    write_hcf_location,
+    NAME_REF_CUSTOM_FLAG, NAME_REF_OFFSET_MASK, TOKEN_FIXED_SIZE, TOKEN_FIXED_SIZE_MULTI_SOURCE,
+    TokenEntry, read_hcf_location, write_hcf_location,
 };
 pub use traits::{TraitDef, TraitSchema, TraitSchemaBuilder, ValueDef};
 

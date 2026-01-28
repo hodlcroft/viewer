@@ -183,23 +183,12 @@ impl CollectionWriter {
         // Add name to string table
         let string_ref = self.strings.add(&token.name)?;
 
-        // Token name_ref uses u16 with high bit as custom name flag
-        // The offset must fit in 15 bits (max 32KB into string table)
-        if string_ref.0 > 0x7FFF {
-            return Err(WriterError::BinaryFormat(
-                BinaryFormatError::StringTableOverflow(format!(
-                    "token name offset {} exceeds 32KB limit for name_ref field",
-                    string_ref.0
-                )),
-            ));
-        }
-
         // Set high bit to indicate custom name
-        let name_ref = (string_ref.0 as u16) | 0x8000;
+        let name_ref = string_ref.0 | viewer_binary::NAME_REF_CUSTOM_FLAG;
 
         // Asset ID is stored separately (not in string table - they're unique anyway)
         self.tokens.push(ResolvedToken {
-            name_ref: name_ref as u32, // Store as u32 internally, serialized as u16
+            name_ref,
             asset_id: token.asset_id,
             traits: token.traits,
             rarity_rank: token.rarity_rank,
@@ -365,7 +354,7 @@ impl CollectionWriter {
                 sprite_y: token.sprite.y,
                 rarity_rank: token.rarity_rank,
                 rarity_score: token.rarity_score,
-                name_ref: token.name_ref as u16, // Safe: validated in add_token
+                name_ref: token.name_ref,
             };
 
             // Write fixed fields
