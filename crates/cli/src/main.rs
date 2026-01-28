@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
 #[command(name = "viewer")]
@@ -72,8 +73,6 @@ enum FetchChain {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
 
     match cli.command {
@@ -157,6 +156,40 @@ async fn cmd_fetch_cardano(policy_id: &str, config_path: Option<PathBuf>) -> any
     Ok(())
 }
 
+/// Set up file logging for the build process.
+fn setup_build_logging(
+    log_path: &std::path::Path,
+) -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
+    use std::io::Write;
+
+    // Truncate and write header
+    let mut file = std::fs::File::create(log_path)?;
+    writeln!(
+        file,
+        "================================================================================\n\
+         Build started: {}\n\
+         ================================================================================\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    )?;
+    drop(file);
+
+    // Set up non-blocking file appender
+    let file = std::fs::OpenOptions::new().append(true).open(log_path)?;
+    let (non_blocking, guard) = tracing_appender::non_blocking(file);
+
+    // Initialize tracing with file layer (info level and above)
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_filter(EnvFilter::new("info")),
+        )
+        .init();
+
+    Ok(guard)
+}
+
 /// Sync a Cardano collection: fetch, analyze, generate sprites, HCF bundles, and collection.bin.
 async fn cmd_sync_cardano(
     policy_id: &str,
@@ -175,23 +208,36 @@ async fn cmd_sync_cardano(
     let config = load_cardano_config(policy_id, config_path)?;
     let ignore_traits = config.traits.ignore.clone();
 
+    // Initialize pipeline first so we can set up logging
+    let pipeline_config = PipelineConfig {
+        build_dir: PathBuf::from(".build"),
+        ..Default::default()
+    };
+    let mut pipeline = Pipeline::new(policy_id, 0, pipeline_config)?;
+
+    // Set up file logging
+    let log_path = pipeline.dirs.build_log();
+    let _log_guard = setup_build_logging(&log_path)?;
+    println!("  Build log: {}", log_path.display());
+
+    tracing::info!("Starting sync for policy_id={}", policy_id);
+
     // Fetch metadata from CNFT.tools
     println!("\n[1/5] Fetching collection metadata...");
     let source = CnftToolsSource::new();
     let assets = source.fetch_collection(policy_id).await?;
     println!("  Found {} assets", assets.len());
+    tracing::info!("Fetched {} assets from CNFT.tools", assets.len());
+
+    // Update pipeline state with actual asset count
+    pipeline.state.total_assets = assets.len();
 
     // Analyze traits
     println!("\n[2/5] Analyzing traits...");
     let analysis = TraitAnalysis::from_assets(&assets, &ignore_traits)?;
     println!("  {}", analysis.summary());
+    tracing::info!("Trait analysis: {}", analysis.summary());
 
-    // Initialize pipeline
-    let pipeline_config = PipelineConfig {
-        build_dir: PathBuf::from(".build"),
-        ..Default::default()
-    };
-    let mut pipeline = Pipeline::new(policy_id, assets.len(), pipeline_config)?;
     println!("  Build directory: {}", pipeline.dirs.root.display());
 
     // Fetch images

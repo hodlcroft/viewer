@@ -102,6 +102,11 @@ impl CollectionDirs {
         self.root.join("metadata.json")
     }
 
+    /// Path to build log file.
+    pub fn build_log(&self) -> PathBuf {
+        self.root.join("build.log")
+    }
+
     /// Path for a raw downloaded image.
     pub fn raw_path(&self, encoded_name: &str, ext: &str) -> PathBuf {
         self.raw.join(format!("{}.{}", encoded_name, ext))
