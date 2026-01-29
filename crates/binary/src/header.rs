@@ -3,13 +3,16 @@
 //! The header is 128 bytes and contains format metadata plus offsets to all sections.
 //! Reserved bytes at the end allow for future expansion without changing header size.
 
-use crate::{BitmapSize, HcfIndexSize, MAGIC, VERSION};
+use crate::{BitmapSize, HcfIndexSize, MAGIC, StringRefSize, VERSION};
 
 /// Fixed header size in bytes.
 pub const HEADER_SIZE: usize = 128;
 
 /// Feature flag: Collection has multiple sources, tokens include source_index field.
 pub const FLAG_MULTI_SOURCE: u16 = 1 << 0;
+
+/// Feature flag: Hide rarity rankings in the UI.
+pub const FLAG_HIDE_RARITY: u16 = 1 << 1;
 
 /// Header structure for collection.bin files.
 ///
@@ -45,8 +48,8 @@ pub struct Header {
     pub token_table_offset: u32,
     /// Offset to PHF data
     pub phf_offset: u32,
-    /// Offset to sprite metadata
-    pub sprites_offset: u32,
+    /// Reserved (was sprites_offset, now in sprites.bin)
+    pub reserved_sprites: u32,
     /// Offset to HCF metadata
     pub hcf_metadata_offset: u32,
     /// Offset to HCF index (array of offset/length per token)
@@ -56,8 +59,11 @@ pub struct Header {
     /// Offset to asset ID index (array of u16 string refs, one per token)
     pub asset_id_index_offset: u32,
 
+    /// String reference size enum (0 = u16, 1 = u32)
+    pub string_ref_size: u8,
+
     /// Reserved for future use (must be zero)
-    pub reserved: [u8; 72],
+    pub reserved: [u8; 71],
 }
 
 impl Header {
@@ -68,6 +74,25 @@ impl Header {
         bitmap_size: BitmapSize,
         hcf_index_size: HcfIndexSize,
         source_count: u8,
+    ) -> Self {
+        Self::with_string_ref_size(
+            token_count,
+            trait_count,
+            bitmap_size,
+            hcf_index_size,
+            source_count,
+            StringRefSize::U16,
+        )
+    }
+
+    /// Create a new header with explicit string reference size.
+    pub fn with_string_ref_size(
+        token_count: u32,
+        trait_count: u8,
+        bitmap_size: BitmapSize,
+        hcf_index_size: HcfIndexSize,
+        source_count: u8,
+        string_ref_size: StringRefSize,
     ) -> Self {
         let flags = if source_count > 1 {
             FLAG_MULTI_SOURCE
@@ -88,18 +113,24 @@ impl Header {
             trait_index_offset: 0,
             token_table_offset: 0,
             phf_offset: 0,
-            sprites_offset: 0,
+            reserved_sprites: 0,
             hcf_metadata_offset: 0,
             hcf_index_offset: 0,
             sources_offset: 0,
             asset_id_index_offset: 0,
-            reserved: [0u8; 72],
+            string_ref_size: string_ref_size as u8,
+            reserved: [0u8; 71],
         }
     }
 
     /// Check if this collection has multiple sources.
     pub fn is_multi_source(&self) -> bool {
         self.flags & FLAG_MULTI_SOURCE != 0
+    }
+
+    /// Check if rarity rankings should be hidden.
+    pub fn hide_rarity(&self) -> bool {
+        self.flags & FLAG_HIDE_RARITY != 0
     }
 
     /// Get the bitmap size enum.
@@ -110,6 +141,11 @@ impl Header {
     /// Get the HCF index size enum.
     pub fn hcf_index_size(&self) -> Option<HcfIndexSize> {
         HcfIndexSize::from_u8(self.hcf_index_size)
+    }
+
+    /// Get the string reference size enum.
+    pub fn string_ref_size(&self) -> StringRefSize {
+        StringRefSize::from_u8(self.string_ref_size).unwrap_or_default()
     }
 
     /// Serialize header to bytes (little-endian).
@@ -129,20 +165,21 @@ impl Header {
         buf[24..28].copy_from_slice(&self.trait_index_offset.to_le_bytes());
         buf[28..32].copy_from_slice(&self.token_table_offset.to_le_bytes());
         buf[32..36].copy_from_slice(&self.phf_offset.to_le_bytes());
-        buf[36..40].copy_from_slice(&self.sprites_offset.to_le_bytes());
+        buf[36..40].copy_from_slice(&self.reserved_sprites.to_le_bytes());
         buf[40..44].copy_from_slice(&self.hcf_metadata_offset.to_le_bytes());
         buf[44..48].copy_from_slice(&self.hcf_index_offset.to_le_bytes());
         buf[48..52].copy_from_slice(&self.sources_offset.to_le_bytes());
         buf[52..56].copy_from_slice(&self.asset_id_index_offset.to_le_bytes());
-        // buf[56..128] reserved (already zero)
+        buf[56] = self.string_ref_size;
+        // buf[57..128] reserved (already zero)
 
         buf
     }
 
     /// Deserialize header from bytes.
     pub fn from_bytes(buf: &[u8; HEADER_SIZE]) -> Self {
-        let mut reserved = [0u8; 72];
-        reserved.copy_from_slice(&buf[56..128]);
+        let mut reserved = [0u8; 71];
+        reserved.copy_from_slice(&buf[57..128]);
 
         Self {
             magic: [buf[0], buf[1], buf[2], buf[3]],
@@ -158,11 +195,12 @@ impl Header {
             trait_index_offset: u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]),
             token_table_offset: u32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]),
             phf_offset: u32::from_le_bytes([buf[32], buf[33], buf[34], buf[35]]),
-            sprites_offset: u32::from_le_bytes([buf[36], buf[37], buf[38], buf[39]]),
+            reserved_sprites: u32::from_le_bytes([buf[36], buf[37], buf[38], buf[39]]),
             hcf_metadata_offset: u32::from_le_bytes([buf[40], buf[41], buf[42], buf[43]]),
             hcf_index_offset: u32::from_le_bytes([buf[44], buf[45], buf[46], buf[47]]),
             sources_offset: u32::from_le_bytes([buf[48], buf[49], buf[50], buf[51]]),
             asset_id_index_offset: u32::from_le_bytes([buf[52], buf[53], buf[54], buf[55]]),
+            string_ref_size: buf[56],
             reserved,
         }
     }
@@ -211,11 +249,41 @@ mod tests {
         let header = Header::new(100, 5, BitmapSize::U64, HcfIndexSize::U32U16, 1);
         let bytes = header.to_bytes();
 
-        // Reserved bytes should be zero
-        assert_eq!(&bytes[56..128], &[0u8; 72]);
+        // Reserved bytes should be zero (byte 57-127)
+        assert_eq!(&bytes[57..128], &[0u8; 71]);
 
         let parsed = Header::from_bytes(&bytes);
-        assert_eq!(parsed.reserved, [0u8; 72]);
+        assert_eq!(parsed.reserved, [0u8; 71]);
+    }
+
+    #[test]
+    fn test_header_string_ref_size() {
+        // Default should be U16
+        let header = Header::new(100, 5, BitmapSize::U64, HcfIndexSize::U32U16, 1);
+        assert_eq!(header.string_ref_size(), StringRefSize::U16);
+
+        let bytes = header.to_bytes();
+        assert_eq!(bytes[56], 0); // U16 = 0
+
+        let parsed = Header::from_bytes(&bytes);
+        assert_eq!(parsed.string_ref_size(), StringRefSize::U16);
+
+        // Test with U32
+        let header = Header::with_string_ref_size(
+            100,
+            5,
+            BitmapSize::U64,
+            HcfIndexSize::U32U16,
+            1,
+            StringRefSize::U32,
+        );
+        assert_eq!(header.string_ref_size(), StringRefSize::U32);
+
+        let bytes = header.to_bytes();
+        assert_eq!(bytes[56], 1); // U32 = 1
+
+        let parsed = Header::from_bytes(&bytes);
+        assert_eq!(parsed.string_ref_size(), StringRefSize::U32);
     }
 
     #[test]

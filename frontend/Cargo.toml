@@ -44,6 +44,9 @@ wasm-bindgen-futures = "0.4"
 # HTTP client for API calls
 gloo-net = "0.6"
 
+# Async utilities
+futures = "0.3"
+
 # Timers for delayed callbacks
 gloo-timers = "0.3"
 

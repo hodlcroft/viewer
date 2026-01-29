@@ -69,6 +69,15 @@ fn build_trait_options(traits: &[TraitInfo], total_tokens: usize) -> Vec<TraitVa
     options
 }
 
+/// Context for sharing collection configuration (display settings) across components
+#[derive(Clone, Copy)]
+pub struct CollectionConfig {
+    /// Whether to hide rarity rankings in the UI
+    pub hide_rarity: bool,
+    /// Total token count (for percentile calculations)
+    pub total_tokens: u32,
+}
+
 /// Context for sharing filter state across components
 #[derive(Clone, Copy)]
 pub struct FilterContext {
@@ -185,6 +194,12 @@ pub fn GalleryPage() -> impl IntoView {
                                 let bitmap_size = collection.tokens.first()
                                     .map(|t| t.trait_bitmap.len())
                                     .unwrap_or(0);
+
+                                // Provide collection config context for child components
+                                provide_context(CollectionConfig {
+                                    hide_rarity: collection.hide_rarity,
+                                    total_tokens: collection.token_count,
+                                });
 
                                 // Store collection for filtering
                                 let collection = StoredValue::new(collection);

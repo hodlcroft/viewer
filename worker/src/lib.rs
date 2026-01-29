@@ -86,7 +86,7 @@ struct StringTableInfo {
 #[derive(Serialize)]
 struct TraitInfo {
     name: String,
-    name_ref: u16,
+    name_ref: u32,
     value_count: usize,
     values: Vec<String>,
 }
@@ -98,8 +98,8 @@ struct TokenDebugInfo {
     sprite_x: u8,
     sprite_y: u8,
     rarity_rank: u16,
-    name_ref_raw: u16,
-    name_ref_masked: u16,
+    name_ref_raw: u32,
+    name_ref_masked: u32,
     has_custom_name: bool,
     name: String,
     asset_id: String,
@@ -162,7 +162,7 @@ fn parse_debug_info(data: &[u8]) -> std::result::Result<DebugInfo, String> {
     // Parse first 10 tokens
     let bitmap_size = header.bitmap_size().ok_or("Invalid bitmap size")?;
     let bitmap_bytes = bitmap_size.byte_size();
-    let token_fixed_size = 10;
+    let token_fixed_size = viewer_binary::TOKEN_FIXED_SIZE;
     let token_entry_size = token_fixed_size + bitmap_bytes;
     let token_table_start = header.token_table_offset as usize;
     let asset_id_index_start = header.asset_id_index_offset as usize;
@@ -176,8 +176,8 @@ fn parse_debug_info(data: &[u8]) -> std::result::Result<DebugInfo, String> {
         let sprite_x = entry[2];
         let sprite_y = entry[3];
         let rarity_rank = u16::from_le_bytes([entry[4], entry[5]]);
-        let name_ref = u16::from_le_bytes([entry[8], entry[9]]);
-        let bitmap = &entry[10..10 + bitmap_bytes];
+        let name_ref = u32::from_le_bytes([entry[8], entry[9], entry[10], entry[11]]);
+        let bitmap = &entry[token_fixed_size..token_fixed_size + bitmap_bytes];
 
         // Read asset ID from new format
         let aid_offset_entry = asset_id_index_start + (i as usize) * 4;
@@ -189,8 +189,8 @@ fn parse_debug_info(data: &[u8]) -> std::result::Result<DebugInfo, String> {
         ]) as usize;
         let asset_id = read_string_at(&data[asset_id_index_start..], aid_str_offset);
 
-        let has_custom_name = name_ref & 0x8000 != 0;
-        let name_ref_masked = name_ref & 0x7FFF;
+        let has_custom_name = name_ref & viewer_binary::NAME_REF_CUSTOM_FLAG != 0;
+        let name_ref_masked = name_ref & viewer_binary::NAME_REF_OFFSET_MASK;
         let name = if has_custom_name {
             read_string(string_table_data, name_ref_masked)
         } else {
@@ -235,7 +235,7 @@ fn parse_debug_info(data: &[u8]) -> std::result::Result<DebugInfo, String> {
     })
 }
 
-fn read_string(table: &[u8], offset: u16) -> String {
+fn read_string(table: &[u8], offset: u32) -> String {
     read_string_at(table, offset as usize)
 }
 

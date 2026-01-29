@@ -53,6 +53,8 @@ impl TraitSchema {
     }
 
     /// Serialize to bytes.
+    ///
+    /// Note: StringRefs are stored as u16 in trait schema (trait/value names are always short).
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
 
@@ -63,16 +65,16 @@ impl TraitSchema {
         buf.extend_from_slice(&(self.total_values as u16).to_le_bytes());
 
         for trait_def in &self.traits {
-            // Trait name ref
-            buf.extend_from_slice(&trait_def.name.0.to_le_bytes());
+            // Trait name ref (as u16)
+            buf.extend_from_slice(&(trait_def.name.0 as u16).to_le_bytes());
             // Bitmap offset
             buf.extend_from_slice(&trait_def.bitmap_offset.to_le_bytes());
             // Value count
             buf.push(trait_def.values.len() as u8);
 
             for value in &trait_def.values {
-                // Value name ref
-                buf.extend_from_slice(&value.name.0.to_le_bytes());
+                // Value name ref (as u16)
+                buf.extend_from_slice(&(value.name.0 as u16).to_le_bytes());
                 // Count
                 buf.extend_from_slice(&value.count.to_le_bytes());
             }
@@ -98,7 +100,7 @@ impl TraitSchema {
                 return None;
             }
 
-            let name = StringRef(u16::from_le_bytes([buf[offset], buf[offset + 1]]));
+            let name = StringRef::from_u16(u16::from_le_bytes([buf[offset], buf[offset + 1]]));
             let bitmap_offset = u16::from_le_bytes([buf[offset + 2], buf[offset + 3]]);
             let value_count = buf[offset + 4] as usize;
             offset += 5;
@@ -109,7 +111,8 @@ impl TraitSchema {
                     return None;
                 }
 
-                let value_name = StringRef(u16::from_le_bytes([buf[offset], buf[offset + 1]]));
+                let value_name =
+                    StringRef::from_u16(u16::from_le_bytes([buf[offset], buf[offset + 1]]));
                 let count = u16::from_le_bytes([buf[offset + 2], buf[offset + 3]]);
                 offset += 4;
 
@@ -165,7 +168,7 @@ impl TraitSchemaBuilder {
         values: Vec<(StringRef, u16)>,
     ) -> Result<(), BinaryFormatError> {
         let value_count = values.len();
-        if self.current_offset as usize + value_count > 512 {
+        if self.current_offset as usize + value_count > crate::BitmapSize::max_supported() {
             return Err(BinaryFormatError::TooManyTraitValues(
                 self.current_offset as usize + value_count,
             ));

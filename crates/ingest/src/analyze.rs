@@ -44,7 +44,7 @@ impl TraitAnalysis {
         let bitmap_size =
             BitmapSize::for_count(total_combinations).ok_or(AnalysisError::TooManyTraitValues {
                 count: total_combinations,
-                max: 512,
+                max: BitmapSize::max_supported(),
             })?;
 
         Ok(Self {

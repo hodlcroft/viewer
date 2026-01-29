@@ -68,6 +68,7 @@ A complete collection bundle consists of:
 ```
 {collection-slug}/
 ├── collection.bin        # Binary index with traits, tokens, HCF locations
+├── sprites.bin           # Sprite index for fast thumbnail lookups
 ├── sprites/
 │   ├── 0000.webp         # Sprite sheet 0 (4x4 = 16 thumbnails)
 │   ├── 0001.webp         # Sprite sheet 1
@@ -86,7 +87,7 @@ The binary format is designed for efficient WASM parsing with zero-copy access w
 
 ```
 ┌──────────────────────────┐
-│ Header (40 bytes)        │  Magic, version, counts, section offsets
+│ Header (128 bytes)       │  Magic, version, counts, section offsets
 ├──────────────────────────┤
 │ String Table             │  Deduplicated trait names and values
 ├──────────────────────────┤
@@ -94,15 +95,17 @@ The binary format is designed for efficient WASM parsing with zero-copy access w
 ├──────────────────────────┤
 │ Trait Index              │  Inverted index: trait:value → token list
 ├──────────────────────────┤
-│ Token Table              │  Fixed-size entries with sprite coords, rarity, bitmap
+│ Token Table              │  Fixed-size entries with rarity, name, bitmap
 ├──────────────────────────┤
 │ Asset ID Index           │  Asset ID strings for URL routing
 ├──────────────────────────┤
-│ Sprite Metadata          │  Grid dimensions, sheet count
-├──────────────────────────┤
 │ HCF Metadata             │  Shard size, count, image format
+├──────────────────────────┤
+│ HCF Index                │  Per-token image offset/length
 └──────────────────────────┘
 ```
+
+Note: Sprite data is stored separately in `sprites.bin` for fast lookups without loading the full collection.
 
 ### Header (128 bytes)
 
@@ -110,10 +113,10 @@ The binary format is designed for efficient WASM parsing with zero-copy access w
 struct Header {
     magic: [u8; 4],              // "COLL"
     version: u16,                // Format version (currently 1)
-    flags: u16,                  // Feature flags (bit 0 = multi-source)
+    flags: u16,                  // Feature flags (bit 0 = multi-source, bit 1 = hide-rarity)
     token_count: u32,            // Number of tokens
     trait_count: u8,             // Number of traits
-    bitmap_size: u8,             // BitmapSize enum (0=U64, 1=U128, 2=U256, 3=U512)
+    bitmap_size: u8,             // BitmapSize enum (0=U64, 1=U128, 2=U256, 3=U512, 4=U1024)
     hcf_index_size: u8,          // HcfIndexSize enum
     source_count: u8,            // Number of sources (1 = single chain)
     
@@ -123,13 +126,14 @@ struct Header {
     trait_index_offset: u32,
     token_table_offset: u32,
     phf_offset: u32,
-    sprites_offset: u32,
+    reserved_sprites: u32,       // Reserved (sprite data now in sprites.bin)
     hcf_metadata_offset: u32,
     hcf_index_offset: u32,
     sources_offset: u32,
     asset_id_index_offset: u32,
+    string_ref_size: u8,         // StringRefSize enum (0=U16, 1=U32)
     
-    reserved: [u8; 72],          // Reserved for future use
+    reserved: [u8; 71],          // Reserved for future use
 }
 ```
 
@@ -166,19 +170,22 @@ The bitmap size is chosen during ingestion based on total trait:value count:
 
 ### Token Entry
 
-Fixed-size per token (size depends on bitmap_size and hcf_index_size):
+Fixed-size per token (8 bytes + bitmap, or 9 bytes for multi-source):
 
 ```rust
 struct TokenEntry {
-    sprite_sheet: u16,     // Which sprite sheet
-    sprite_x: u8,          // Column in sprite grid
-    sprite_y: u8,          // Row in sprite grid
+    // For multi-source only:
+    source_index: u8,      // Which source (only if FLAG_MULTI_SOURCE set)
+    
+    // Always present (8 bytes):
     rarity_rank: u16,      // 1 = rarest
     rarity_score: u16,     // Fixed-point (score * 100)
-    name_ref: u16,         // String table ref or pattern number
+    name_ref: u32,         // High bit = custom name flag, lower 31 bits = string table offset
     bitmap: [u8; N],       // Trait bitmap (N = bitmap_size.byte_size())
 }
 ```
+
+Note: Sprite coordinates are stored in `sprites.bin`, not in the token entry. This keeps the collection.bin smaller and allows sprite lookups without loading the full collection.
 
 ### Size Budget
 
@@ -190,11 +197,72 @@ For a typical 10K PFP collection with 10 traits and ~100 total values:
 | String table | ~2 KB |
 | Trait schema | ~600 B |
 | Trait index | ~20 KB |
-| Token table | ~240 KB |
+| Token table | ~160 KB |
 | Asset ID index | ~80 KB |
-| Sprite metadata | 12 B |
 | HCF metadata | 12 B |
-| **Total** | **~345 KB** |
+| HCF index | ~60 KB |
+| **Total** | **~325 KB** |
+
+Plus sprites.bin: ~120 KB for 10K tokens (12 bytes per entry + 18 byte header).
+
+## Sprite Index (sprites.bin)
+
+The sprite index is a separate lightweight file for fast thumbnail lookups by asset ID hash.
+
+### Format
+
+```
+┌──────────────────────────┐
+│ Header (18 bytes)        │
+├──────────────────────────┤
+│ Entries (12 bytes each)  │  Sorted by asset_id_hash for binary search
+└──────────────────────────┘
+```
+
+### Header (18 bytes)
+
+```rust
+struct SpriteIndexHeader {
+    magic: [u8; 4],        // "SPRT"
+    version: u16,          // Format version (currently 1)
+    entry_count: u32,      // Number of entries
+    sheet_count: u16,      // Number of sprite sheets
+    thumb_width: u16,      // Thumbnail width in pixels
+    thumb_height: u16,     // Thumbnail height in pixels
+    grid_columns: u8,      // Columns per sheet
+    grid_rows: u8,         // Rows per sheet
+}
+```
+
+### Entry (12 bytes)
+
+```rust
+struct SpriteIndexEntry {
+    asset_id_hash: u64,    // xxHash64 of asset ID string
+    sheet: u16,            // Which sprite sheet (0000.webp, 0001.webp, etc.)
+    x: u8,                 // Column in sprite grid (0 to grid_columns-1)
+    y: u8,                 // Row in sprite grid (0 to grid_rows-1)
+}
+```
+
+### Lookup
+
+Entries are sorted by `asset_id_hash` for O(log n) binary search lookup:
+
+```rust
+fn lookup_sprite(sprites_bin: &[u8], asset_id: &str) -> Option<(u16, u8, u8)> {
+    let hash = xxhash64(asset_id.as_bytes());
+    // Binary search entries by hash
+    // Returns (sheet, x, y) if found
+}
+```
+
+### Benefits
+
+- **Fast lookups**: Binary search by hash, no need to scan all tokens
+- **Standalone**: Can display thumbnails without loading collection.bin
+- **Compact**: 12 bytes per token vs 4 bytes saved in collection.bin token entries
+- **Parallel loading**: Frontend loads collection.bin and sprites.bin simultaneously
 
 ## Sprite Sheets
 

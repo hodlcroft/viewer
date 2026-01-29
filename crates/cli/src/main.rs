@@ -73,6 +73,9 @@ enum FetchChain {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env file if present
+    dotenvy::dotenv().ok();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -157,10 +160,56 @@ async fn cmd_fetch_cardano(policy_id: &str, config_path: Option<PathBuf>) -> any
     Ok(())
 }
 
-/// Set up file logging for the build process.
-fn setup_build_logging(
-    log_path: &std::path::Path,
-) -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
+/// A MakeWriter that opens, writes, and syncs for each log event.
+/// This is slower but guarantees immediate visibility.
+#[derive(Clone)]
+struct ImmediateFileWriter {
+    path: std::path::PathBuf,
+}
+
+impl ImmediateFileWriter {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ImmediateFileWriter {
+    type Writer = ImmediateWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        // Open file in append mode for each write
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .expect("Failed to open log file");
+        ImmediateWriter { file }
+    }
+}
+
+/// Writer that syncs after being dropped (when the log line is complete).
+struct ImmediateWriter {
+    file: std::fs::File,
+}
+
+impl std::io::Write for ImmediateWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.file.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl Drop for ImmediateWriter {
+    fn drop(&mut self) {
+        // Sync when the writer is dropped (after each log line)
+        let _ = self.file.sync_data();
+    }
+}
+
+fn setup_build_logging(log_path: &std::path::Path) -> anyhow::Result<()> {
     use std::io::Write;
 
     // Truncate and write header
@@ -172,23 +221,23 @@ fn setup_build_logging(
          ================================================================================\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
     )?;
+    file.sync_all()?;
     drop(file);
 
-    // Set up non-blocking file appender
-    let file = std::fs::OpenOptions::new().append(true).open(log_path)?;
-    let (non_blocking, guard) = tracing_appender::non_blocking(file);
+    // Use immediate writer that syncs after each log event
+    let writer = ImmediateFileWriter::new(log_path.to_path_buf());
 
     // Initialize tracing with file layer (info level and above)
     tracing_subscriber::registry()
         .with(
             fmt::layer()
-                .with_writer(non_blocking)
+                .with_writer(writer)
                 .with_ansi(false)
                 .with_filter(EnvFilter::new("info")),
         )
         .init();
 
-    Ok(guard)
+    Ok(())
 }
 
 /// Sync a Cardano collection: fetch, analyze, generate sprites, HCF bundles, and collection.bin.
@@ -198,11 +247,13 @@ async fn cmd_sync_cardano(
     config_path: Option<PathBuf>,
     skip_images: bool,
 ) -> anyhow::Result<()> {
-    use viewer_binary::{HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, StringRef};
+    use viewer_binary::{
+        HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, SpriteIndexBuilder, StringRef,
+    };
     use viewer_ingest::{
-        AssetSource, CnftToolsSource, CollectionWriter, HcfBundler, HcfConfig, Pipeline,
-        PipelineConfig, SpriteConfig, SpriteGenerator, SpriteLocation, TraitAnalysis, fetch_images,
-        fetch_images_iiif,
+        AssetSource, CnftToolsSource, CollectionWriter, HcfBundler, HcfConfig, PinataClient,
+        Pipeline, PipelineConfig, SpriteConfig, SpriteGenerator, TraitAnalysis, fetch_images,
+        fetch_images_iiif, fetch_thumbnails_pinata,
     };
 
     println!("Syncing Cardano collection: {}", policy_id);
@@ -220,7 +271,7 @@ async fn cmd_sync_cardano(
 
     // Set up file logging
     let log_path = pipeline.dirs.build_log();
-    let _log_guard = setup_build_logging(&log_path)?;
+    setup_build_logging(&log_path)?;
     println!("  Build log: {}", log_path.display());
 
     tracing::info!("Starting sync for policy_id={}", policy_id);
@@ -254,7 +305,7 @@ async fn cmd_sync_cardano(
     // This establishes deterministic ordering and can be uploaded for testing
     println!("\n[3/6] Writing collection.bin (pass 1 - no HCF)...");
     let collection_bin_path = pipeline.dirs.root.join("collection.bin");
-    let sprite_config = SpriteConfig::default(); // Will be updated after sprite generation
+    let _sprite_config_placeholder = (); // Sprite config determined after sprite generation
     {
         use viewer_binary::{HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, StringRef};
 
@@ -276,12 +327,13 @@ async fn cmd_sync_cardano(
             max_dimension: 2048,
         };
 
-        let mut writer = CollectionWriter::new(
+        let mut writer = CollectionWriter::with_options(
             sources,
             hcf_metadata,
             analysis.total_values(),
             0, // total_hcf_size unknown yet
             0, // max_image_size unknown yet
+            config.rarity.hide,
         )
         .ok_or_else(|| anyhow::anyhow!("Too many trait values for binary format"))?;
 
@@ -292,22 +344,8 @@ async fn cmd_sync_cardano(
             writer.add_trait(trait_name, &value_counts)?;
         }
 
-        // Calculate sprite locations using default config
-        let thumbs_per_sheet = sprite_config.thumbs_per_sheet();
-
         // Add tokens
-        for (idx, asset) in assets.iter().enumerate() {
-            let sheet = (idx as u32) / thumbs_per_sheet;
-            let pos_in_sheet = (idx as u32) % thumbs_per_sheet;
-            let col = pos_in_sheet % sprite_config.grid_columns;
-            let row = pos_in_sheet / sprite_config.grid_columns;
-
-            let sprite = SpriteLocation {
-                sheet: sheet as u16,
-                x: col as u8,
-                y: row as u8,
-            };
-
+        for asset in &assets {
             let traits: Vec<(u8, u8)> = asset
                 .traits
                 .iter()
@@ -321,7 +359,6 @@ async fn cmd_sync_cardano(
                 traits,
                 rarity_rank: asset.rarity_rank.unwrap_or(0) as u16,
                 rarity_score: 0,
-                sprite,
                 source_index: None,
             };
 
@@ -345,84 +382,232 @@ async fn cmd_sync_cardano(
         );
     }
 
-    // Fetch images
-    if !skip_images {
-        let progress_cb = Box::new(
-            |processed: usize, total: usize, fetched: usize, failed: usize| {
-                print!(
-                    "\r  Progress: {}/{} ({} new, {} failed)    ",
-                    processed, total, fetched, failed
-                );
-                use std::io::Write;
-                std::io::stdout().flush().ok();
-            },
-        );
+    // Pinata mode: pin CIDs and fetch thumbnails
+    // Standard mode: fetch raw images from IPFS/IIIF
+    let use_pinata = config.pinata.is_enabled();
+    let pinata_client = if use_pinata {
+        Some(PinataClient::from_env()?)
+    } else {
+        None
+    };
 
-        let result = if config.images.is_iiif() {
-            println!("\n[4/6] Fetching images from IIIF...");
-            fetch_images_iiif(
-                &mut pipeline,
-                &assets,
-                policy_id,
-                &config.images,
-                Some(progress_cb),
-            )
-            .await?
-        } else {
-            println!("\n[4/6] Fetching images from IPFS...");
-            fetch_images(&mut pipeline, &assets, Some(progress_cb)).await?
-        };
+    if use_pinata {
+        let pinata = pinata_client.as_ref().unwrap();
+        let group_id = config.pinata.group_id.as_ref().unwrap();
+
+        // Use pre-configured group ID
+        println!("\n[4a/6] Setting up Pinata group...");
+        println!("  Using group ID: {}", group_id);
+
+        // Extract (name, CID) pairs from assets
+        let pin_items: Vec<(String, String)> = assets
+            .iter()
+            .filter_map(|a| {
+                a.image_url
+                    .as_ref()
+                    .and_then(|url| viewer_ingest::extract_cid(url))
+                    .map(|cid| (a.display_name.clone(), cid))
+            })
+            .collect();
 
         println!(
-            "\r  Complete: {} fetched, {} skipped, {} failed    ",
-            result.fetched,
-            result.skipped,
-            result.failed.len()
+            "  Ensuring {} CIDs are pinned (rate limited to ~150/min)...",
+            pin_items.len()
         );
+        let pinned = pinata
+            .ensure_cids_pinned(
+                group_id,
+                &pin_items,
+                Some(&|done, total| {
+                    print!("\r  Queueing pins: {}/{}    ", done, total);
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                }),
+            )
+            .await?;
+        println!("\r  Queued {} new CIDs for pinning    ", pinned);
 
-        // Abort if any images failed
-        if !result.failed.is_empty() {
-            println!("\nFailed to fetch {} images:", result.failed.len());
-            for id in &result.failed {
-                println!("  - {}", id);
+        // Extract just CIDs for wait_for_pins
+        let cids: Vec<String> = pin_items.into_iter().map(|(_, cid)| cid).collect();
+
+        // Wait for pins to complete if we queued any
+        if pinned > 0 {
+            println!("  Waiting for pins to complete...");
+            let failed_pins = pinata
+                .wait_for_pins(
+                    &cids,
+                    Some(&|completed, total, status| {
+                        print!("\r  Pin status: {}/{} ({})    ", completed, total, status);
+                        use std::io::Write;
+                        std::io::stdout().flush().ok();
+                    }),
+                )
+                .await?;
+
+            if !failed_pins.is_empty() {
+                println!("\r  Warning: {} CIDs failed to pin    ", failed_pins.len());
+                for cid in failed_pins.iter().take(5) {
+                    println!("    - {}", cid);
+                }
+                if failed_pins.len() > 5 {
+                    println!("    ... and {} more", failed_pins.len() - 5);
+                }
+            } else {
+                println!("\r  All pins completed successfully    ");
             }
-            anyhow::bail!(
-                "Cannot continue with {} failed images. Fix the issues and retry.",
+        }
+
+        // Fetch thumbnails
+        if !skip_images {
+            println!("\n[4b/6] Fetching thumbnails from Pinata...");
+            let progress_cb = Box::new(
+                |processed: usize, total: usize, fetched: usize, failed: usize| {
+                    print!(
+                        "\r  Progress: {}/{} ({} new, {} failed)    ",
+                        processed, total, fetched, failed
+                    );
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                },
+            );
+
+            let result = fetch_thumbnails_pinata(
+                &mut pipeline,
+                &assets,
+                pinata,
+                config.pinata.thumbnail_size,
+                Some(progress_cb),
+            )
+            .await?;
+
+            println!(
+                "\r  Complete: {} fetched, {} skipped, {} failed    ",
+                result.fetched,
+                result.skipped,
                 result.failed.len()
             );
+
+            if !result.failed.is_empty() {
+                tracing::error!("Failed to fetch {} thumbnails", result.failed.len());
+                println!("\nFailed to fetch {} thumbnails:", result.failed.len());
+                for id in result.failed.iter().take(10) {
+                    tracing::error!("  Failed thumbnail: {}", id);
+                    println!("  - {}", id);
+                }
+                if result.failed.len() > 10 {
+                    println!("  ... and {} more", result.failed.len() - 10);
+                }
+                anyhow::bail!(
+                    "Cannot continue with {} failed thumbnails. Fix the issues and retry.",
+                    result.failed.len()
+                );
+            }
+        } else {
+            println!("\n[4b/6] Skipping thumbnail fetch (--skip-images)");
         }
     } else {
-        println!("\n[4/6] Skipping image fetch (--skip-images)");
+        // Standard IPFS/IIIF fetch
+        if !skip_images {
+            let progress_cb = Box::new(
+                |processed: usize, total: usize, fetched: usize, failed: usize| {
+                    print!(
+                        "\r  Progress: {}/{} ({} new, {} failed)    ",
+                        processed, total, fetched, failed
+                    );
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                },
+            );
+
+            let result = if config.images.is_iiif() {
+                println!("\n[4/6] Fetching images from IIIF...");
+                fetch_images_iiif(
+                    &mut pipeline,
+                    &assets,
+                    policy_id,
+                    &config.images,
+                    Some(progress_cb),
+                )
+                .await?
+            } else {
+                println!("\n[4/6] Fetching images from IPFS...");
+                fetch_images(&mut pipeline, &assets, &config.images, Some(progress_cb)).await?
+            };
+
+            println!(
+                "\r  Complete: {} fetched, {} skipped, {} failed    ",
+                result.fetched,
+                result.skipped,
+                result.failed.len()
+            );
+
+            // Abort if any images failed
+            if !result.failed.is_empty() {
+                tracing::error!("Failed to fetch {} images", result.failed.len());
+                println!("\nFailed to fetch {} images:", result.failed.len());
+                for id in &result.failed {
+                    tracing::error!("  Failed image: {}", id);
+                    println!("  - {}", id);
+                }
+                anyhow::bail!(
+                    "Cannot continue with {} failed images. Fix the issues and retry.",
+                    result.failed.len()
+                );
+            }
+        } else {
+            println!("\n[4/6] Skipping image fetch (--skip-images)");
+        }
     }
 
-    // Generate sprites from raw images (auto-detects aspect ratio)
-    // Existing sheets are automatically skipped
+    // Generate sprites from images
+    // Pinata mode: uses thumbnails/ directory (already sized PNGs)
+    // Standard mode: uses raw/ directory (auto-detects aspect ratio)
     println!("\n[5/6] Generating sprites...");
     let sprite_config_actual: SpriteConfig;
     {
-        // Collect raw image paths in asset order
-        let mut raw_paths: Vec<std::path::PathBuf> = Vec::with_capacity(assets.len());
+        // Collect image paths in asset order
+        let mut image_paths: Vec<std::path::PathBuf> = Vec::with_capacity(assets.len());
         let mut missing = Vec::new();
 
-        for asset in &assets {
-            if let Some(path) = pipeline.raw_exists(&asset.encoded_name) {
-                raw_paths.push(path);
-            } else {
-                missing.push(asset.encoded_name.clone());
+        if use_pinata {
+            // Use thumbnails directory for Pinata mode
+            let thumbnails_dir = pipeline.dirs.root.join("thumbnails");
+            for asset in &assets {
+                let path = thumbnails_dir.join(format!("{}.png", asset.encoded_name));
+                if path.exists() {
+                    image_paths.push(path);
+                } else {
+                    missing.push(asset.encoded_name.clone());
+                }
+            }
+        } else {
+            // Use raw directory for standard mode
+            for asset in &assets {
+                if let Some(path) = pipeline.raw_exists(&asset.encoded_name) {
+                    image_paths.push(path);
+                } else {
+                    missing.push(asset.encoded_name.clone());
+                }
             }
         }
 
         if !missing.is_empty() {
+            let image_type = if use_pinata {
+                "thumbnails"
+            } else {
+                "raw images"
+            };
             anyhow::bail!(
-                "Cannot generate sprites: {} raw images missing. Run without --skip-images first.",
-                missing.len()
+                "Cannot generate sprites: {} {} missing. Run without --skip-images first.",
+                missing.len(),
+                image_type
             );
         }
 
-        let total = raw_paths.len();
+        let total = image_paths.len();
         let (sheets, _locations, detected_config) = SpriteGenerator::generate_batch_auto(
             pipeline.config.sprite_max_sheet_size,
-            &raw_paths,
+            &image_paths,
             &pipeline.dirs.sprites,
             |done, _| {
                 if done % 64 == 0 || done == total {
@@ -445,6 +630,40 @@ async fn cmd_sync_cardano(
             "Generated {} sprite sheets, total size: {} bytes",
             sheets.len(),
             total_size
+        );
+
+        // Generate sprites.bin index file
+        let sprites_bin_path = pipeline.dirs.root.join("sprites.bin");
+        let thumbs_per_sheet = sprite_config_actual.thumbs_per_sheet();
+        let mut sprite_builder = SpriteIndexBuilder::new(
+            sheets.len() as u16,
+            sprite_config_actual.thumb_width as u16,
+            sprite_config_actual.thumb_height as u16,
+            sprite_config_actual.grid_columns as u8,
+            sprite_config_actual.grid_rows as u8,
+        );
+
+        for (idx, asset) in assets.iter().enumerate() {
+            let sheet = (idx as u32) / thumbs_per_sheet;
+            let pos_in_sheet = (idx as u32) % thumbs_per_sheet;
+            let col = pos_in_sheet % sprite_config_actual.grid_columns;
+            let row = pos_in_sheet / sprite_config_actual.grid_columns;
+
+            sprite_builder.add(&asset.encoded_name, sheet as u16, col as u8, row as u8);
+        }
+
+        let sprite_index_data = sprite_builder.build();
+        std::fs::write(&sprites_bin_path, &sprite_index_data)?;
+        println!(
+            "  Written {} ({:.2} KB, {} entries)",
+            sprites_bin_path.display(),
+            sprite_index_data.len() as f64 / 1024.0,
+            assets.len()
+        );
+        tracing::info!(
+            "Wrote sprites.bin: {} bytes, {} entries",
+            sprite_index_data.len(),
+            assets.len()
         );
 
         pipeline.state.sprites_complete = true;
@@ -531,12 +750,13 @@ async fn cmd_sync_cardano(
             max_dimension: 2048,
         };
 
-        let mut writer = CollectionWriter::new(
+        let mut writer = CollectionWriter::with_options(
             sources,
             hcf_metadata,
             analysis.total_values(),
             hcf_result.total_size,
             hcf_result.max_image_size,
+            config.rarity.hide,
         )
         .ok_or_else(|| anyhow::anyhow!("Too many trait values for binary format"))?;
 
@@ -547,22 +767,8 @@ async fn cmd_sync_cardano(
             writer.add_trait(trait_name, &value_counts)?;
         }
 
-        // Calculate sprite locations using actual detected config
-        let thumbs_per_sheet = sprite_config_actual.thumbs_per_sheet();
-
         // Add tokens
-        for (idx, asset) in assets.iter().enumerate() {
-            let sheet = (idx as u32) / thumbs_per_sheet;
-            let pos_in_sheet = (idx as u32) % thumbs_per_sheet;
-            let col = pos_in_sheet % sprite_config_actual.grid_columns;
-            let row = pos_in_sheet / sprite_config_actual.grid_columns;
-
-            let sprite = SpriteLocation {
-                sheet: sheet as u16,
-                x: col as u8,
-                y: row as u8,
-            };
-
+        for asset in &assets {
             let traits: Vec<(u8, u8)> = asset
                 .traits
                 .iter()
@@ -576,7 +782,6 @@ async fn cmd_sync_cardano(
                 traits,
                 rarity_rank: asset.rarity_rank.unwrap_or(0) as u16,
                 rarity_score: 0, // TODO: Calculate rarity score
-                sprite,
                 source_index: None,
             };
 

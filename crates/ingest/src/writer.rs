@@ -21,11 +21,10 @@ use std::path::Path;
 use thiserror::Error;
 use viewer_binary::{
     BinaryFormatError, BitmapSize, HEADER_SIZE, HcfIndexSize, HcfMetadata, Header, SourcesSection,
-    StringTableBuilder, TokenEntry, TraitSchemaBuilder,
+    StringRefSize, StringTableBuilder, TokenEntry, TraitSchemaBuilder,
 };
 
 use crate::bundle::ImageLocation;
-use crate::sprites::SpriteLocation;
 
 /// Binary format writer errors.
 #[derive(Debug, Error)]
@@ -52,7 +51,8 @@ pub enum WriterError {
 /// Token data for writing to binary format.
 ///
 /// Note: HCF locations are stored in a separate index section, not with tokens.
-/// This allows the token table to be built before HCF bundling is complete.
+/// Sprite locations are stored in a separate sprites.bin file for fast lookups.
+/// This allows the token table to be built before HCF/sprite bundling is complete.
 #[derive(Debug, Clone)]
 pub struct TokenData {
     /// Token name (for string table)
@@ -67,8 +67,6 @@ pub struct TokenData {
     pub rarity_rank: u16,
     /// Rarity score (multiplied by 100 for fixed-point)
     pub rarity_score: u16,
-    /// Sprite location
-    pub sprite: SpriteLocation,
     /// Source index (for multi-source collections)
     pub source_index: Option<u8>,
 }
@@ -76,8 +74,8 @@ pub struct TokenData {
 /// Internal token data with resolved string references.
 #[derive(Debug, Clone)]
 struct ResolvedToken {
-    /// Name string reference
-    name_ref: u16,
+    /// Name string reference (with high bit set for custom names)
+    name_ref: u32,
     /// Asset ID stored as raw bytes (not in string table - they're unique anyway)
     asset_id: String,
     /// Trait values as (trait_index, value_index) pairs
@@ -86,8 +84,6 @@ struct ResolvedToken {
     rarity_rank: u16,
     /// Rarity score (multiplied by 100 for fixed-point)
     rarity_score: u16,
-    /// Sprite location
-    sprite: SpriteLocation,
     /// Source index (for multi-source collections)
     source_index: Option<u8>,
 }
@@ -108,12 +104,14 @@ pub struct CollectionWriter {
     bitmap_size: BitmapSize,
     /// HCF index size
     hcf_index_size: HcfIndexSize,
+    /// Hide rarity rankings in the UI
+    hide_rarity: bool,
 }
 
 impl CollectionWriter {
     /// Create a new collection writer.
     ///
-    /// Returns None if total_trait_values exceeds 512.
+    /// Returns None if total_trait_values exceeds the maximum supported.
     pub fn new(
         sources: SourcesSection,
         hcf_metadata: HcfMetadata,
@@ -121,17 +119,40 @@ impl CollectionWriter {
         total_hcf_size: u64,
         max_image_size: u32,
     ) -> Option<Self> {
+        Self::with_options(
+            sources,
+            hcf_metadata,
+            total_trait_values,
+            total_hcf_size,
+            max_image_size,
+            false,
+        )
+    }
+
+    /// Create a new collection writer with additional options.
+    ///
+    /// Returns None if total_trait_values exceeds the maximum supported.
+    pub fn with_options(
+        sources: SourcesSection,
+        hcf_metadata: HcfMetadata,
+        total_trait_values: usize,
+        total_hcf_size: u64,
+        max_image_size: u32,
+        hide_rarity: bool,
+    ) -> Option<Self> {
         let bitmap_size = BitmapSize::for_count(total_trait_values)?;
         let hcf_index_size = HcfIndexSize::for_sizes(total_hcf_size, max_image_size);
 
+        // Use U32 capacity during building, downgrade to U16 at write time if it fits
         Some(Self {
-            strings: StringTableBuilder::new(),
+            strings: StringTableBuilder::with_ref_size(StringRefSize::U32),
             traits: TraitSchemaBuilder::new(),
             tokens: Vec::new(),
             sources,
             hcf_metadata,
             bitmap_size,
             hcf_index_size,
+            hide_rarity,
         })
     }
 
@@ -155,8 +176,11 @@ impl CollectionWriter {
     ///
     /// Returns an error if the name cannot be added to the string table.
     pub fn add_token(&mut self, token: TokenData) -> Result<(), WriterError> {
-        // Add name to string table (with high bit set to indicate custom name)
-        let name_ref = self.strings.add(&token.name)?.0 | 0x8000;
+        // Add name to string table
+        let string_ref = self.strings.add(&token.name)?;
+
+        // Set high bit to indicate custom name
+        let name_ref = string_ref.0 | viewer_binary::NAME_REF_CUSTOM_FLAG;
 
         // Asset ID is stored separately (not in string table - they're unique anyway)
         self.tokens.push(ResolvedToken {
@@ -165,7 +189,6 @@ impl CollectionWriter {
             traits: token.traits,
             rarity_rank: token.rarity_rank,
             rarity_score: token.rarity_score,
-            sprite: token.sprite,
             source_index: token.source_index,
         });
 
@@ -252,12 +275,9 @@ impl CollectionWriter {
         // PHF data (placeholder - would contain perfect hash function data)
         let phf_bytes: Vec<u8> = Vec::new();
 
-        let sprites_offset = phf_offset + phf_bytes.len() as u32;
+        // Note: Sprite data is now in separate sprites.bin file
 
-        // Sprite metadata (placeholder)
-        let sprites_bytes: Vec<u8> = Vec::new();
-
-        let hcf_metadata_offset = sprites_offset + sprites_bytes.len() as u32;
+        let hcf_metadata_offset = phf_offset + phf_bytes.len() as u32;
         let hcf_metadata_bytes = self.hcf_metadata.to_bytes();
 
         // HCF index section (array of offset/length per token)
@@ -271,20 +291,27 @@ impl CollectionWriter {
         let asset_id_index_offset = sources_offset + sources_bytes.len() as u32;
         let asset_id_index_bytes = self.build_asset_id_index();
 
+        // Determine string ref size based on actual string table size
+        let string_ref_size = StringRefSize::for_size(string_table.data().len());
+
         // Build header
-        let mut header = Header::new(
+        let mut header = Header::with_string_ref_size(
             self.tokens.len() as u32,
             self.traits.trait_count() as u8,
             self.bitmap_size,
             self.hcf_index_size,
             self.sources.count() as u8,
+            string_ref_size,
         );
+        if self.hide_rarity {
+            header.flags |= viewer_binary::FLAG_HIDE_RARITY;
+        }
         header.string_table_offset = string_table_offset;
         header.trait_schema_offset = trait_schema_offset;
         header.trait_index_offset = trait_index_offset;
         header.token_table_offset = token_table_offset;
         header.phf_offset = phf_offset;
-        header.sprites_offset = sprites_offset;
+        // sprites_offset removed - sprite data now in sprites.bin
         header.hcf_metadata_offset = hcf_metadata_offset;
         header.hcf_index_offset = hcf_index_offset;
         header.sources_offset = sources_offset;
@@ -297,7 +324,6 @@ impl CollectionWriter {
         writer.write_all(&trait_index_bytes)?;
         writer.write_all(&token_table_bytes)?;
         writer.write_all(&phf_bytes)?;
-        writer.write_all(&sprites_bytes)?;
         writer.write_all(&hcf_metadata_bytes)?;
         writer.write_all(&hcf_index_bytes)?;
         writer.write_all(&sources_bytes)?;
@@ -314,9 +340,6 @@ impl CollectionWriter {
         for token in &self.tokens {
             let entry = TokenEntry {
                 source_index: token.source_index,
-                sprite_sheet: token.sprite.sheet,
-                sprite_x: token.sprite.x,
-                sprite_y: token.sprite.y,
                 rarity_rank: token.rarity_rank,
                 rarity_score: token.rarity_score,
                 name_ref: token.name_ref,
@@ -364,7 +387,7 @@ impl CollectionWriter {
 
     /// Encode trait values into a bitmap.
     fn encode_traits_bitmap(&self, traits: &[(u8, u8)]) -> Vec<u8> {
-        let mut bitmap = vec![0u8; 64]; // Max U512 size
+        let mut bitmap = vec![0u8; self.bitmap_size.byte_size()];
 
         for (trait_idx, value_idx) in traits {
             // Calculate bit position: sum of all values before this trait + value_idx
@@ -450,11 +473,6 @@ mod tests {
             traits: vec![(0, 1), (1, 0)], // Blue background, Open eyes
             rarity_rank: 1,
             rarity_score: 100,
-            sprite: SpriteLocation {
-                sheet: 0,
-                x: 0,
-                y: 0,
-            },
             source_index: None,
         };
 

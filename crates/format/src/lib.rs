@@ -200,6 +200,42 @@ pub struct IngestionConfig {
     /// Rarity calculation overrides
     #[serde(default)]
     pub rarity: RarityConfig,
+
+    /// Pinata configuration for pinning and serving images
+    #[serde(default)]
+    pub pinata: PinataConfig,
+}
+
+/// Pinata configuration for image pinning and serving.
+///
+/// When enabled, the sync process will:
+/// 1. Pin all collection CIDs to the specified group
+/// 2. Fetch thumbnails via Pinata's image optimization
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PinataConfig {
+    /// Whether Pinata integration is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Group ID for this collection's images.
+    /// Create the group in Pinata's UI and copy the ID here.
+    #[serde(default)]
+    pub group_id: Option<String>,
+
+    /// Thumbnail size in pixels (default: 256)
+    #[serde(default = "default_thumbnail_size")]
+    pub thumbnail_size: u32,
+}
+
+fn default_thumbnail_size() -> u32 {
+    256
+}
+
+impl PinataConfig {
+    /// Check if Pinata is enabled and properly configured.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled && self.group_id.is_some()
+    }
 }
 
 /// Image source configuration.
@@ -216,6 +252,29 @@ pub struct ImageSourceConfig {
     /// IIIF max size parameter (default: 1686)
     #[serde(default = "default_iiif_size")]
     pub iiif_size: u32,
+
+    /// Custom IPFS gateways for this collection.
+    ///
+    /// Use shortcodes: "blockfrost", "pinata", "dweb", "ipfs_io"
+    ///
+    /// If not specified, uses the default gateways (Blockfrost + Pinata).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gateways: Vec<IpfsGateway>,
+}
+
+/// Known IPFS gateways that can be configured per collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IpfsGateway {
+    /// Blockfrost IPFS gateway (requires CIDv1 conversion)
+    Blockfrost,
+    /// Pinata public gateway
+    Pinata,
+    /// dweb.link gateway (Protocol Labs)
+    Dweb,
+    /// ipfs.io gateway
+    #[serde(rename = "ipfs_io")]
+    IpfsIo,
 }
 
 fn default_image_source() -> String {
@@ -232,6 +291,7 @@ impl Default for ImageSourceConfig {
             source: default_image_source(),
             iiif_base_url: None,
             iiif_size: default_iiif_size(),
+            gateways: Vec::new(),
         }
     }
 }
@@ -278,6 +338,10 @@ pub struct RarityConfig {
     /// Traits to exclude from rarity score calculation.
     #[serde(default)]
     pub exclude: Vec<String>,
+
+    /// Hide rarity rankings in the viewer UI.
+    #[serde(default)]
+    pub hide: bool,
 }
 
 impl IngestionConfig {
