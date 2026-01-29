@@ -393,29 +393,69 @@ async fn cmd_sync_cardano(
 
     if use_pinata {
         let pinata = pinata_client.as_ref().unwrap();
-        let group_name = config.pinata.group_name.as_ref().unwrap();
+        let group_id = config.pinata.group_id.as_ref().unwrap();
 
-        // Ensure group exists and pin all CIDs
+        // Use pre-configured group ID
         println!("\n[4a/6] Setting up Pinata group...");
-        let group = pinata.ensure_group(group_name).await?;
-        println!("  Group: {} ({})", group.name, group.id);
+        println!("  Using group ID: {}", group_id);
 
-        // Extract CIDs from assets
-        let cids: Vec<String> = assets
+        // Extract (name, CID) pairs from assets
+        let pin_items: Vec<(String, String)> = assets
             .iter()
             .filter_map(|a| {
-                a.image_url.as_ref().and_then(|url| {
-                    // Extract CID from ipfs:// URL
-                    url.strip_prefix("ipfs://")
-                        .or_else(|| url.strip_prefix("ipfs://ipfs/"))
-                        .map(|s| s.split('/').next().unwrap_or(s).to_string())
-                })
+                a.image_url
+                    .as_ref()
+                    .and_then(|url| viewer_ingest::extract_cid(url))
+                    .map(|cid| (a.display_name.clone(), cid))
             })
             .collect();
 
-        println!("  Ensuring {} CIDs are pinned...", cids.len());
-        let pinned = pinata.ensure_cids_pinned(&group, &cids).await?;
-        println!("  Pinned {} new CIDs", pinned);
+        println!(
+            "  Ensuring {} CIDs are pinned (rate limited to ~150/min)...",
+            pin_items.len()
+        );
+        let pinned = pinata
+            .ensure_cids_pinned(
+                group_id,
+                &pin_items,
+                Some(&|done, total| {
+                    print!("\r  Queueing pins: {}/{}    ", done, total);
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                }),
+            )
+            .await?;
+        println!("\r  Queued {} new CIDs for pinning    ", pinned);
+
+        // Extract just CIDs for wait_for_pins
+        let cids: Vec<String> = pin_items.into_iter().map(|(_, cid)| cid).collect();
+
+        // Wait for pins to complete if we queued any
+        if pinned > 0 {
+            println!("  Waiting for pins to complete...");
+            let failed_pins = pinata
+                .wait_for_pins(
+                    &cids,
+                    Some(&|completed, total, status| {
+                        print!("\r  Pin status: {}/{} ({})    ", completed, total, status);
+                        use std::io::Write;
+                        std::io::stdout().flush().ok();
+                    }),
+                )
+                .await?;
+
+            if !failed_pins.is_empty() {
+                println!("\r  Warning: {} CIDs failed to pin    ", failed_pins.len());
+                for cid in failed_pins.iter().take(5) {
+                    println!("    - {}", cid);
+                }
+                if failed_pins.len() > 5 {
+                    println!("    ... and {} more", failed_pins.len() - 5);
+                }
+            } else {
+                println!("\r  All pins completed successfully    ");
+            }
+        }
 
         // Fetch thumbnails
         if !skip_images {

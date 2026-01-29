@@ -27,6 +27,32 @@ fn to_cidv1(cid_str: &str) -> Option<String> {
     Some(cidv1.to_string())
 }
 
+/// Extract a CID from a string that may be a bare CID or an IPFS URL.
+///
+/// Handles formats like:
+/// - `QmXyz...` (bare CIDv0)
+/// - `bafyXyz...` (bare CIDv1)
+/// - `ipfs://QmXyz...`
+/// - `ipfs://ipfs/QmXyz...`
+/// - `ipfs://QmXyz.../path/to/file`
+///
+/// Returns `Some(cid)` if a valid CID is found, `None` otherwise.
+pub fn extract_cid(input: &str) -> Option<String> {
+    let input = input.trim();
+
+    // Strip common prefixes to get to the CID part
+    let cid_part = input
+        .strip_prefix("ipfs://ipfs/")
+        .or_else(|| input.strip_prefix("ipfs://"))
+        .unwrap_or(input);
+
+    // Take just the CID (before any path separator)
+    let cid_str = cid_part.split('/').next().unwrap_or(cid_part);
+
+    // Validate by attempting to parse as a CID
+    Cid::from_str(cid_str).ok().map(|_| cid_str.to_string())
+}
+
 /// IPFS gateway configuration.
 #[derive(Debug, Clone)]
 pub struct Gateway {

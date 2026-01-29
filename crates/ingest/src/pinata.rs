@@ -96,6 +96,28 @@ struct PinResponse {
     data: PinStatus,
 }
 
+#[derive(Debug, Deserialize)]
+struct PinRequestsResponse {
+    data: PinRequestsData,
+}
+
+#[derive(Debug, Deserialize)]
+struct PinRequestsData {
+    jobs: Vec<PinJob>,
+    next_page_token: Option<String>,
+}
+
+/// A pin request job from the queue.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PinJob {
+    pub id: String,
+    pub cid: String,
+    pub name: Option<String>,
+    pub status: String,
+    pub group_id: Option<String>,
+    pub date_queued: String,
+}
+
 #[derive(Debug, Serialize)]
 struct CreateGroupRequest {
     name: String,
@@ -324,51 +346,86 @@ impl PinataClient {
 
     /// Ensure all CIDs are pinned to a group.
     ///
+    /// Takes a slice of (name, cid) pairs. The name is used for display in Pinata's UI.
+    ///
+    /// Rate limited to respect Pinata's 180 requests/minute limit.
     /// Returns the number of newly pinned CIDs.
     pub async fn ensure_cids_pinned(
         &self,
-        group: &Group,
-        cids: &[String],
+        group_id: &str,
+        items: &[(String, String)], // (name, cid)
+        on_progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<usize, PinataError> {
         // Get existing files in group
-        let existing_files = self.list_files_in_group(&group.id).await?;
+        let existing_files = self.list_files_in_group(group_id).await?;
         let existing_cids: std::collections::HashSet<_> =
             existing_files.iter().map(|f| f.cid.as_str()).collect();
 
+        // Get CIDs already in the pin queue (in-flight)
+        let pending_jobs = self.query_pin_requests(None).await?;
+        let pending_cids: std::collections::HashSet<_> =
+            pending_jobs.iter().map(|j| j.cid.as_str()).collect();
+
+        let to_pin: Vec<_> = items
+            .iter()
+            .filter(|(_, cid)| {
+                !existing_cids.contains(cid.as_str()) && !pending_cids.contains(cid.as_str())
+            })
+            .collect();
+
         info!(
-            "Group {} has {} existing files, need to check {} CIDs",
-            group.name,
+            "Group {} has {} existing files, {} in-flight, {} new CIDs to pin",
+            group_id,
             existing_cids.len(),
-            cids.len()
+            pending_cids.len(),
+            to_pin.len()
         );
 
+        if to_pin.is_empty() {
+            return Ok(0);
+        }
+
+        // Rate limit: 180 requests/minute = 3 requests/second
+        // Use 2.5/sec to have some buffer
+        let delay = Duration::from_millis(400);
         let mut pinned = 0;
-        for cid in cids {
-            if existing_cids.contains(cid.as_str()) {
-                continue;
+        let mut failed = 0;
+        let total = to_pin.len();
+
+        for (i, (name, cid)) in to_pin.iter().enumerate() {
+            // Pin directly to group - if already pinned elsewhere,
+            // Pinata returns isDuplicate:true but still associates with group
+            match self.pin_by_cid(cid, Some(name), Some(group_id)).await {
+                Ok(status) => {
+                    if status.status == "prechecking" || status.status == "pinned" {
+                        pinned += 1;
+                        info!("Pinned {} / {} (status: {})", name, cid, status.status);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to pin {} / {}: {}", name, cid, e);
+                    failed += 1;
+                }
             }
 
-            // Check if already pinned elsewhere in account
-            if let Some(file) = self.find_file_by_cid(cid).await? {
-                // Already pinned, just add to group
-                if file.group_id.as_deref() != Some(&group.id) {
-                    self.add_file_to_group(&file.id, &group.id).await?;
-                    info!("Added existing file {} to group", cid);
+            // Report progress
+            if let Some(callback) = on_progress {
+                if (i + 1) % 50 == 0 || i + 1 == total {
+                    callback(i + 1, total);
                 }
-            } else {
-                // Pin new CID
-                match self.pin_by_cid(cid, None, Some(&group.id)).await {
-                    Ok(_) => {
-                        info!("Pinned new CID: {}", cid);
-                        pinned += 1;
-                    }
-                    Err(e) => {
-                        warn!("Failed to pin CID {}: {}", cid, e);
-                    }
-                }
+            }
+
+            // Rate limit delay (skip on last item)
+            if i + 1 < total {
+                tokio::time::sleep(delay).await;
             }
         }
 
+        if failed > 0 {
+            warn!("Failed to pin {} CIDs", failed);
+        }
+
+        info!("Pinned {} new CIDs to group {}", pinned, group_id);
         Ok(pinned)
     }
 
@@ -400,5 +457,136 @@ impl PinataClient {
         }
 
         Ok(bytes.to_vec())
+    }
+
+    /// Query pin requests (jobs in the pinning queue).
+    ///
+    /// Returns all pending pin jobs, optionally filtered by status.
+    pub async fn query_pin_requests(
+        &self,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<PinJob>, PinataError> {
+        let mut all_jobs = Vec::new();
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let mut url = format!("{}/files/public/pin_by_cid?limit=100", PINATA_API_BASE);
+
+            if let Some(status) = status_filter {
+                url = format!("{}&status={}", url, status);
+            }
+
+            if let Some(ref token) = page_token {
+                url = format!("{}&pageToken={}", url, token);
+            }
+
+            debug!("Querying pin requests: {}", url);
+
+            let response = self.client.get(&url).bearer_auth(&self.jwt).send().await?;
+
+            if !response.status().is_success() {
+                let status = response.status().as_u16();
+                let message = response.text().await.unwrap_or_default();
+                return Err(PinataError::Api { status, message });
+            }
+
+            let result: PinRequestsResponse = response.json().await?;
+            all_jobs.extend(result.data.jobs);
+
+            match result.data.next_page_token {
+                Some(token) if !token.is_empty() => page_token = Some(token),
+                _ => break,
+            }
+        }
+
+        Ok(all_jobs)
+    }
+
+    /// Wait for all pin requests for the given CIDs to complete.
+    ///
+    /// Polls the pin queue until none of our CIDs are in a pending state.
+    /// Returns the CIDs that failed to pin.
+    pub async fn wait_for_pins(
+        &self,
+        cids: &[String],
+        on_progress: Option<&dyn Fn(usize, usize, &str)>,
+    ) -> Result<Vec<String>, PinataError> {
+        let cid_set: std::collections::HashSet<&str> = cids.iter().map(|s| s.as_str()).collect();
+        let total = cids.len();
+        let poll_interval = Duration::from_secs(10);
+        let mut failed_cids = Vec::new();
+
+        // Statuses that indicate work in progress
+        let pending_statuses = ["prechecking", "searching", "retrieving"];
+        // Statuses that indicate failure
+        let failed_statuses = [
+            "expired",
+            "over_free_limit",
+            "over_max_size",
+            "invalid_object",
+            "bad_host_node",
+        ];
+
+        loop {
+            // Get all pin jobs (no status filter to see everything)
+            let jobs = self.query_pin_requests(None).await?;
+
+            // Filter to our CIDs
+            let our_jobs: Vec<_> = jobs
+                .iter()
+                .filter(|j| cid_set.contains(j.cid.as_str()))
+                .collect();
+
+            // Count pending vs completed
+            let pending: Vec<_> = our_jobs
+                .iter()
+                .filter(|j| pending_statuses.contains(&j.status.as_str()))
+                .collect();
+
+            // Track failures
+            for job in &our_jobs {
+                if failed_statuses.contains(&job.status.as_str()) {
+                    if !failed_cids.contains(&job.cid) {
+                        warn!("Pin failed for CID {}: {}", job.cid, job.status);
+                        failed_cids.push(job.cid.clone());
+                    }
+                }
+            }
+
+            let completed = total - pending.len() - failed_cids.len();
+
+            if let Some(callback) = on_progress {
+                let status_msg = if pending.is_empty() {
+                    "complete".to_string()
+                } else {
+                    // Show what statuses we're waiting on
+                    let mut status_counts: std::collections::HashMap<&str, usize> =
+                        std::collections::HashMap::new();
+                    for job in &pending {
+                        *status_counts.entry(&job.status).or_insert(0) += 1;
+                    }
+                    status_counts
+                        .iter()
+                        .map(|(s, c)| format!("{}: {}", s, c))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                callback(completed, total, &status_msg);
+            }
+
+            if pending.is_empty() {
+                info!(
+                    "All pins complete: {} succeeded, {} failed",
+                    total - failed_cids.len(),
+                    failed_cids.len()
+                );
+                break;
+            }
+
+            debug!("Waiting for {} pins to complete...", pending.len());
+            tokio::time::sleep(poll_interval).await;
+        }
+
+        Ok(failed_cids)
     }
 }

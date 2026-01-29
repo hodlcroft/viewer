@@ -22,7 +22,7 @@ pub mod writer;
 pub use analyze::TraitAnalysis;
 pub use bundle::{HcfBundleResult, HcfBundler, HcfConfig, HcfError, ImageLocation, ShardInfo};
 pub use fetch::{FetchResult, fetch_images, fetch_images_iiif, fetch_thumbnails_pinata};
-pub use ipfs::IpfsFetcher;
+pub use ipfs::{IpfsFetcher, extract_cid};
 pub use normalize::{
     BatchNormalizer, NormalizeConfig, NormalizeError, NormalizeResult, normalize_image,
 };

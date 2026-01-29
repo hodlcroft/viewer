@@ -209,19 +209,18 @@ pub struct IngestionConfig {
 /// Pinata configuration for image pinning and serving.
 ///
 /// When enabled, the sync process will:
-/// 1. Create/find the specified group
-/// 2. Pin all collection CIDs to that group
-/// 3. Fetch thumbnails via Pinata's image optimization
+/// 1. Pin all collection CIDs to the specified group
+/// 2. Fetch thumbnails via Pinata's image optimization
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PinataConfig {
     /// Whether Pinata integration is enabled.
     #[serde(default)]
     pub enabled: bool,
 
-    /// Group name for this collection's images.
-    /// Will be created if it doesn't exist.
+    /// Group ID for this collection's images.
+    /// Create the group in Pinata's UI and copy the ID here.
     #[serde(default)]
-    pub group_name: Option<String>,
+    pub group_id: Option<String>,
 
     /// Thumbnail size in pixels (default: 256)
     #[serde(default = "default_thumbnail_size")]
@@ -235,7 +234,7 @@ fn default_thumbnail_size() -> u32 {
 impl PinataConfig {
     /// Check if Pinata is enabled and properly configured.
     pub fn is_enabled(&self) -> bool {
-        self.enabled && self.group_name.is_some()
+        self.enabled && self.group_id.is_some()
     }
 }
 
