@@ -35,6 +35,21 @@ enum Commands {
         /// Path to the bundle directory
         path: PathBuf,
     },
+
+    /// Pinata operations
+    Pinata {
+        #[command(subcommand)]
+        action: PinataAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PinataAction {
+    /// Cancel all pending pin requests in the queue
+    PurgeQueue,
+
+    /// Show status of pending pin requests
+    QueueStatus,
 }
 
 #[derive(Subcommand)]
@@ -97,6 +112,10 @@ async fn main() -> anyhow::Result<()> {
             todo!("Verify not yet implemented")
         }
         Commands::Info { path } => cmd_info(&path),
+        Commands::Pinata { action } => match action {
+            PinataAction::PurgeQueue => cmd_pinata_purge_queue().await,
+            PinataAction::QueueStatus => cmd_pinata_queue_status().await,
+        },
     }
 }
 
@@ -821,6 +840,94 @@ async fn cmd_sync_cardano(
     println!("\nOutput: {}", output.display());
     std::fs::create_dir_all(output)?;
     // TODO: Copy collection.bin, sprites, HCF to output directory
+
+    Ok(())
+}
+
+/// Cancel all pending pin requests in Pinata queue.
+async fn cmd_pinata_purge_queue() -> anyhow::Result<()> {
+    use viewer_ingest::PinataClient;
+
+    println!("Connecting to Pinata...");
+    let pinata = PinataClient::from_env()?;
+
+    // First show current queue status
+    let jobs = pinata.query_pin_requests(None).await?;
+
+    if jobs.is_empty() {
+        println!("Pin queue is empty, nothing to cancel.");
+        return Ok(());
+    }
+
+    // Count by status
+    let mut status_counts: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for job in &jobs {
+        *status_counts.entry(&job.status).or_insert(0) += 1;
+    }
+
+    println!("Found {} pending pin requests:", jobs.len());
+    for (status, count) in &status_counts {
+        println!("  {}: {}", status, count);
+    }
+
+    println!("\nCancelling all requests...");
+    let cancelled = pinata.cancel_all_pins().await?;
+
+    println!("Cancelled {} pin requests.", cancelled);
+
+    Ok(())
+}
+
+/// Show status of pending pin requests in Pinata queue.
+async fn cmd_pinata_queue_status() -> anyhow::Result<()> {
+    use viewer_ingest::PinataClient;
+
+    println!("Connecting to Pinata...");
+    let pinata = PinataClient::from_env()?;
+
+    let jobs = pinata.query_pin_requests(None).await?;
+
+    if jobs.is_empty() {
+        println!("Pin queue is empty.");
+        return Ok(());
+    }
+
+    // Count by status
+    let mut status_counts: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for job in &jobs {
+        *status_counts.entry(&job.status).or_insert(0) += 1;
+    }
+
+    println!("Pin queue status ({} total):", jobs.len());
+    for (status, count) in &status_counts {
+        println!("  {}: {}", status, count);
+    }
+
+    // Show a few sample entries
+    if jobs.len() <= 10 {
+        println!("\nAll requests:");
+        for job in &jobs {
+            println!(
+                "  {} - {} [{}]",
+                job.cid,
+                job.name.as_deref().unwrap_or("(unnamed)"),
+                job.status
+            );
+        }
+    } else {
+        println!("\nFirst 10 requests:");
+        for job in jobs.iter().take(10) {
+            println!(
+                "  {} - {} [{}]",
+                job.cid,
+                job.name.as_deref().unwrap_or("(unnamed)"),
+                job.status
+            );
+        }
+        println!("  ... and {} more", jobs.len() - 10);
+    }
 
     Ok(())
 }

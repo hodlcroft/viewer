@@ -1,0 +1,17 @@
+slug = "nikeverse"
+name = "Nikeverse"
+
+[pinata]
+enabled = true
+group_id = "b848a01a-db68-4ac9-a071-f76a87eb67cc"
+
+[images]
+source = "ipfs"
+gateways = ["dweb", "pinata"]
+
+[traits]
+ignore = []
+
+[rarity]
+hide = false
+exclude = []

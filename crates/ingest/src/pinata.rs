@@ -11,6 +11,10 @@ use tracing::{debug, info, warn};
 
 const PINATA_API_BASE: &str = "https://api.pinata.cloud/v3";
 
+/// Maximum number of pending pin requests before we pause and wait.
+/// Pinata can handle ~250 active requests before backfilling.
+const PIN_QUEUE_CAPACITY: usize = 100;
+
 /// Pinata API client.
 #[derive(Clone)]
 pub struct PinataClient {
@@ -501,19 +505,14 @@ impl PinataClient {
             backfilled_count
         );
 
-        // If there are backfilled items OR we're near the 250 active limit, wait for capacity
-        // Threshold: wait if active >= 100 or any backfilled
-        const QUEUE_PAUSE_THRESHOLD: usize = 100;
-        let should_wait = backfilled_count > 0 || active_count >= QUEUE_PAUSE_THRESHOLD;
+        // If there are backfilled items OR we're near the active limit, wait for capacity
+        let should_wait = backfilled_count > 0 || active_count >= PIN_QUEUE_CAPACITY;
 
         if should_wait {
             let reason = if backfilled_count > 0 {
                 format!("{} backfilled", backfilled_count)
             } else {
-                format!(
-                    "{} active (threshold {})",
-                    active_count, QUEUE_PAUSE_THRESHOLD
-                )
+                format!("{} active (threshold {})", active_count, PIN_QUEUE_CAPACITY)
             };
             info!(
                 "Pin queue is busy ({}). Waiting for queue to drain before adding more...",
@@ -548,7 +547,7 @@ impl PinataClient {
                 );
 
                 // Resume when backfilled is 0 AND active is below threshold
-                if current_backfilled == 0 && current_active < QUEUE_PAUSE_THRESHOLD {
+                if current_backfilled == 0 && current_active < PIN_QUEUE_CAPACITY {
                     info!(
                         "Queue has capacity ({} active), resuming...",
                         current_active
@@ -736,44 +735,84 @@ impl PinataClient {
         Ok(cancelled)
     }
 
-    /// Check if pin queue has more than 100 pending requests.
-    /// Returns true if next_page_token is present on first page of 100.
-    async fn is_pin_queue_full(&self) -> Result<bool, PinataError> {
-        let url = format!("{}/files/public/pin_by_cid?limit=100", PINATA_API_BASE);
+    /// Cancel ALL pending pin requests (all statuses).
+    /// Use this to completely clear the pin queue.
+    pub async fn cancel_all_pins(&self) -> Result<usize, PinataError> {
+        let jobs = self.query_pin_requests(None).await?;
 
-        let response = self
-            .send_with_retry(self.client.get(&url).bearer_auth(&self.jwt))
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let message = response.text().await.unwrap_or_default();
-            return Err(PinataError::Api { status, message });
+        if jobs.is_empty() {
+            info!("No pending pin requests to cancel");
+            return Ok(0);
         }
 
-        let text = response.text().await?;
-        let result: PinRequestsResponse = serde_json::from_str(&text)
-            .map_err(|e| PinataError::InvalidResponse(format!("Failed to parse: {}", e)))?;
+        info!("Cancelling {} pin requests (all statuses)", jobs.len());
 
-        // If there's a next_page_token, there are more than 100 pending
-        Ok(result.data.next_page_token.is_some())
+        let mut cancelled = 0;
+        let mut failed = 0;
+        let delay = Duration::from_millis(400); // Rate limit
+
+        for (i, job) in jobs.iter().enumerate() {
+            match self.cancel_pin_request(&job.id).await {
+                Ok(()) => {
+                    cancelled += 1;
+                    debug!(
+                        "Cancelled pin request {} ({}) [{}]",
+                        job.id,
+                        job.name.as_deref().unwrap_or("?"),
+                        job.status
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to cancel pin request {}: {}", job.id, e);
+                    failed += 1;
+                }
+            }
+
+            if i + 1 < jobs.len() {
+                tokio::time::sleep(delay).await;
+            }
+        }
+
+        info!("Cancelled {} pin requests ({} failed)", cancelled, failed);
+        Ok(cancelled)
     }
 
-    /// Wait for pin queue to have capacity (<100 pending requests).
+    /// Check if pin queue has more than PIN_QUEUE_CAPACITY pending requests.
+    async fn is_pin_queue_full(&self) -> Result<bool, PinataError> {
+        let jobs = self.query_pin_requests(None).await?;
+        info!(
+            "is_pin_queue_full: {} jobs (capacity: {})",
+            jobs.len(),
+            PIN_QUEUE_CAPACITY
+        );
+        Ok(jobs.len() >= PIN_QUEUE_CAPACITY)
+    }
+
+    /// Wait for pin queue to have capacity (<PIN_QUEUE_CAPACITY pending requests).
     async fn wait_for_queue_capacity(&self) -> Result<(), PinataError> {
         let poll_interval = Duration::from_secs(30);
 
         loop {
             tokio::time::sleep(poll_interval).await;
 
-            let is_full = self.is_pin_queue_full().await?;
+            let jobs = self.query_pin_requests(None).await?;
+            info!("Queue check: {} pending jobs", jobs.len());
 
-            if is_full {
-                eprint!("\r  Waiting for queue capacity...    ");
-            } else {
-                eprintln!("\r  Queue has capacity, resuming...    ");
-                info!("Pin queue has capacity, resuming...");
+            if jobs.len() < PIN_QUEUE_CAPACITY {
+                eprintln!(
+                    "\r  Queue has capacity ({} pending), resuming...    ",
+                    jobs.len()
+                );
+                info!(
+                    "Pin queue has capacity ({} pending), resuming...",
+                    jobs.len()
+                );
                 break;
+            } else {
+                eprint!(
+                    "\r  Waiting for queue capacity ({} pending)...    ",
+                    jobs.len()
+                );
             }
         }
 
