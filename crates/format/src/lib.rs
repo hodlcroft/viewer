@@ -200,6 +200,43 @@ pub struct IngestionConfig {
     /// Rarity calculation overrides
     #[serde(default)]
     pub rarity: RarityConfig,
+
+    /// Pinata configuration for pinning and serving images
+    #[serde(default)]
+    pub pinata: PinataConfig,
+}
+
+/// Pinata configuration for image pinning and serving.
+///
+/// When enabled, the sync process will:
+/// 1. Create/find the specified group
+/// 2. Pin all collection CIDs to that group
+/// 3. Fetch thumbnails via Pinata's image optimization
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PinataConfig {
+    /// Whether Pinata integration is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Group name for this collection's images.
+    /// Will be created if it doesn't exist.
+    #[serde(default)]
+    pub group_name: Option<String>,
+
+    /// Thumbnail size in pixels (default: 256)
+    #[serde(default = "default_thumbnail_size")]
+    pub thumbnail_size: u32,
+}
+
+fn default_thumbnail_size() -> u32 {
+    256
+}
+
+impl PinataConfig {
+    /// Check if Pinata is enabled and properly configured.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled && self.group_name.is_some()
+    }
 }
 
 /// Image source configuration.

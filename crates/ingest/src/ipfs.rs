@@ -241,37 +241,35 @@ impl ImageFormat {
     }
 }
 
-/// IPFS fetcher with sequential gateway fallback and round-robin load balancing.
+/// IPFS fetcher with sequential gateway fallback.
 pub struct IpfsFetcher {
     client: reqwest::Client,
     gateways: Vec<Gateway>,
     semaphore: Arc<Semaphore>,
-    /// Counter for round-robin gateway selection
-    next_gateway: AtomicU32,
+    #[allow(dead_code)]
     max_retries: u32,
+    #[allow(dead_code)]
     base_delay: Duration,
 }
 
 impl IpfsFetcher {
-    /// Create a new fetcher with default settings.
+    /// Create a new fetcher with default gateways.
     pub fn new(concurrency: usize) -> Self {
+        Self::with_gateways(concurrency, default_gateways())
+    }
+
+    /// Create a fetcher with custom gateways (does not use defaults).
+    pub fn with_gateways(concurrency: usize, gateways: Vec<Gateway>) -> Self {
         Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(90))
                 .build()
                 .expect("Failed to create HTTP client"),
-            gateways: default_gateways(),
+            gateways,
             semaphore: Arc::new(Semaphore::new(concurrency)),
-            next_gateway: AtomicU32::new(0),
             max_retries: 3,
             base_delay: Duration::from_millis(500),
         }
-    }
-
-    /// Create with custom gateways.
-    pub fn with_gateways(mut self, gateways: Vec<Gateway>) -> Self {
-        self.gateways = gateways;
-        self
     }
 
     /// Parse an IPFS URL and extract CID and optional path.
@@ -318,8 +316,8 @@ impl IpfsFetcher {
         self.fetch_with_fallback(cid, path).await
     }
 
-    /// Fetch with round-robin gateway selection and sequential fallback.
-    /// On failure, rotates to the next gateway for subsequent requests.
+    /// Fetch with sequential gateway fallback.
+    /// Always tries gateways in configured order (first = primary, rest = fallbacks).
     async fn fetch_with_fallback(
         &self,
         cid: &str,
@@ -333,15 +331,10 @@ impl IpfsFetcher {
             });
         }
 
-        // Get starting gateway index (round-robin)
-        let start_idx = self.next_gateway.fetch_add(1, Ordering::Relaxed) as usize % num_gateways;
         let mut last_error = None;
 
-        // Try each gateway in round-robin order
-        for i in 0..num_gateways {
-            let idx = (start_idx + i) % num_gateways;
-            let gateway = &self.gateways[idx];
-
+        // Try each gateway in order (primary first, then fallbacks)
+        for gateway in &self.gateways {
             let Some(url) = gateway.build_url(cid, path) else {
                 debug!(gateway = %gateway.name, "Failed to build URL for CID {}", cid);
                 continue;

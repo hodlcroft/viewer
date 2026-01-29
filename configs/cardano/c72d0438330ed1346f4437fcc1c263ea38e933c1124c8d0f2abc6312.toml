@@ -1,9 +1,13 @@
 slug = "kwic"
 name = "KWIC"
 
+[pinata]
+enabled = true
+group_name = "KWIC"
+
 [images]
 source = "ipfs"
-gateways = ["dweb"]
+gateways = ["dweb", "pinata"]
 
 [traits]
 ignore = []

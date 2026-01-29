@@ -160,18 +160,52 @@ async fn cmd_fetch_cardano(policy_id: &str, config_path: Option<PathBuf>) -> any
     Ok(())
 }
 
-/// A writer that flushes after every write for immediate log visibility
-struct FlushingFile(std::fs::File);
+/// A MakeWriter that opens, writes, and syncs for each log event.
+/// This is slower but guarantees immediate visibility.
+#[derive(Clone)]
+struct ImmediateFileWriter {
+    path: std::path::PathBuf,
+}
 
-impl std::io::Write for FlushingFile {
+impl ImmediateFileWriter {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ImmediateFileWriter {
+    type Writer = ImmediateWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        // Open file in append mode for each write
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .expect("Failed to open log file");
+        ImmediateWriter { file }
+    }
+}
+
+/// Writer that syncs after being dropped (when the log line is complete).
+struct ImmediateWriter {
+    file: std::fs::File,
+}
+
+impl std::io::Write for ImmediateWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = std::io::Write::write(&mut self.0, buf)?;
-        std::io::Write::flush(&mut self.0)?;
-        Ok(n)
+        self.file.write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        std::io::Write::flush(&mut self.0)
+        self.file.flush()
+    }
+}
+
+impl Drop for ImmediateWriter {
+    fn drop(&mut self) {
+        // Sync when the writer is dropped (after each log line)
+        let _ = self.file.sync_data();
     }
 }
 
@@ -187,11 +221,11 @@ fn setup_build_logging(log_path: &std::path::Path) -> anyhow::Result<()> {
          ================================================================================\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
     )?;
+    file.sync_all()?;
     drop(file);
 
-    // Set up writer that flushes after each write
-    let file = std::fs::OpenOptions::new().append(true).open(log_path)?;
-    let writer = std::sync::Mutex::new(FlushingFile(file));
+    // Use immediate writer that syncs after each log event
+    let writer = ImmediateFileWriter::new(log_path.to_path_buf());
 
     // Initialize tracing with file layer (info level and above)
     tracing_subscriber::registry()
@@ -217,9 +251,9 @@ async fn cmd_sync_cardano(
         HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, SpriteIndexBuilder, StringRef,
     };
     use viewer_ingest::{
-        AssetSource, CnftToolsSource, CollectionWriter, HcfBundler, HcfConfig, Pipeline,
-        PipelineConfig, SpriteConfig, SpriteGenerator, TraitAnalysis, fetch_images,
-        fetch_images_iiif,
+        AssetSource, CnftToolsSource, CollectionWriter, HcfBundler, HcfConfig, PinataClient,
+        Pipeline, PipelineConfig, SpriteConfig, SpriteGenerator, TraitAnalysis, fetch_images,
+        fetch_images_iiif, fetch_thumbnails_pinata,
     };
 
     println!("Syncing Cardano collection: {}", policy_id);
@@ -348,86 +382,192 @@ async fn cmd_sync_cardano(
         );
     }
 
-    // Fetch images
-    if !skip_images {
-        let progress_cb = Box::new(
-            |processed: usize, total: usize, fetched: usize, failed: usize| {
-                print!(
-                    "\r  Progress: {}/{} ({} new, {} failed)    ",
-                    processed, total, fetched, failed
-                );
-                use std::io::Write;
-                std::io::stdout().flush().ok();
-            },
-        );
+    // Pinata mode: pin CIDs and fetch thumbnails
+    // Standard mode: fetch raw images from IPFS/IIIF
+    let use_pinata = config.pinata.is_enabled();
+    let pinata_client = if use_pinata {
+        Some(PinataClient::from_env()?)
+    } else {
+        None
+    };
 
-        let result = if config.images.is_iiif() {
-            println!("\n[4/6] Fetching images from IIIF...");
-            fetch_images_iiif(
+    if use_pinata {
+        let pinata = pinata_client.as_ref().unwrap();
+        let group_name = config.pinata.group_name.as_ref().unwrap();
+
+        // Ensure group exists and pin all CIDs
+        println!("\n[4a/6] Setting up Pinata group...");
+        let group = pinata.ensure_group(group_name).await?;
+        println!("  Group: {} ({})", group.name, group.id);
+
+        // Extract CIDs from assets
+        let cids: Vec<String> = assets
+            .iter()
+            .filter_map(|a| {
+                a.image_url.as_ref().and_then(|url| {
+                    // Extract CID from ipfs:// URL
+                    url.strip_prefix("ipfs://")
+                        .or_else(|| url.strip_prefix("ipfs://ipfs/"))
+                        .map(|s| s.split('/').next().unwrap_or(s).to_string())
+                })
+            })
+            .collect();
+
+        println!("  Ensuring {} CIDs are pinned...", cids.len());
+        let pinned = pinata.ensure_cids_pinned(&group, &cids).await?;
+        println!("  Pinned {} new CIDs", pinned);
+
+        // Fetch thumbnails
+        if !skip_images {
+            println!("\n[4b/6] Fetching thumbnails from Pinata...");
+            let progress_cb = Box::new(
+                |processed: usize, total: usize, fetched: usize, failed: usize| {
+                    print!(
+                        "\r  Progress: {}/{} ({} new, {} failed)    ",
+                        processed, total, fetched, failed
+                    );
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                },
+            );
+
+            let result = fetch_thumbnails_pinata(
                 &mut pipeline,
                 &assets,
-                policy_id,
-                &config.images,
+                pinata,
+                config.pinata.thumbnail_size,
                 Some(progress_cb),
             )
-            .await?
-        } else {
-            println!("\n[4/6] Fetching images from IPFS...");
-            fetch_images(&mut pipeline, &assets, &config.images, Some(progress_cb)).await?
-        };
+            .await?;
 
-        println!(
-            "\r  Complete: {} fetched, {} skipped, {} failed    ",
-            result.fetched,
-            result.skipped,
-            result.failed.len()
-        );
-
-        // Abort if any images failed
-        if !result.failed.is_empty() {
-            tracing::error!("Failed to fetch {} images", result.failed.len());
-            println!("\nFailed to fetch {} images:", result.failed.len());
-            for id in &result.failed {
-                tracing::error!("  Failed image: {}", id);
-                println!("  - {}", id);
-            }
-            anyhow::bail!(
-                "Cannot continue with {} failed images. Fix the issues and retry.",
+            println!(
+                "\r  Complete: {} fetched, {} skipped, {} failed    ",
+                result.fetched,
+                result.skipped,
                 result.failed.len()
             );
+
+            if !result.failed.is_empty() {
+                tracing::error!("Failed to fetch {} thumbnails", result.failed.len());
+                println!("\nFailed to fetch {} thumbnails:", result.failed.len());
+                for id in result.failed.iter().take(10) {
+                    tracing::error!("  Failed thumbnail: {}", id);
+                    println!("  - {}", id);
+                }
+                if result.failed.len() > 10 {
+                    println!("  ... and {} more", result.failed.len() - 10);
+                }
+                anyhow::bail!(
+                    "Cannot continue with {} failed thumbnails. Fix the issues and retry.",
+                    result.failed.len()
+                );
+            }
+        } else {
+            println!("\n[4b/6] Skipping thumbnail fetch (--skip-images)");
         }
     } else {
-        println!("\n[4/6] Skipping image fetch (--skip-images)");
+        // Standard IPFS/IIIF fetch
+        if !skip_images {
+            let progress_cb = Box::new(
+                |processed: usize, total: usize, fetched: usize, failed: usize| {
+                    print!(
+                        "\r  Progress: {}/{} ({} new, {} failed)    ",
+                        processed, total, fetched, failed
+                    );
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                },
+            );
+
+            let result = if config.images.is_iiif() {
+                println!("\n[4/6] Fetching images from IIIF...");
+                fetch_images_iiif(
+                    &mut pipeline,
+                    &assets,
+                    policy_id,
+                    &config.images,
+                    Some(progress_cb),
+                )
+                .await?
+            } else {
+                println!("\n[4/6] Fetching images from IPFS...");
+                fetch_images(&mut pipeline, &assets, &config.images, Some(progress_cb)).await?
+            };
+
+            println!(
+                "\r  Complete: {} fetched, {} skipped, {} failed    ",
+                result.fetched,
+                result.skipped,
+                result.failed.len()
+            );
+
+            // Abort if any images failed
+            if !result.failed.is_empty() {
+                tracing::error!("Failed to fetch {} images", result.failed.len());
+                println!("\nFailed to fetch {} images:", result.failed.len());
+                for id in &result.failed {
+                    tracing::error!("  Failed image: {}", id);
+                    println!("  - {}", id);
+                }
+                anyhow::bail!(
+                    "Cannot continue with {} failed images. Fix the issues and retry.",
+                    result.failed.len()
+                );
+            }
+        } else {
+            println!("\n[4/6] Skipping image fetch (--skip-images)");
+        }
     }
 
-    // Generate sprites from raw images (auto-detects aspect ratio)
-    // Existing sheets are automatically skipped
+    // Generate sprites from images
+    // Pinata mode: uses thumbnails/ directory (already sized PNGs)
+    // Standard mode: uses raw/ directory (auto-detects aspect ratio)
     println!("\n[5/6] Generating sprites...");
     let sprite_config_actual: SpriteConfig;
     {
-        // Collect raw image paths in asset order
-        let mut raw_paths: Vec<std::path::PathBuf> = Vec::with_capacity(assets.len());
+        // Collect image paths in asset order
+        let mut image_paths: Vec<std::path::PathBuf> = Vec::with_capacity(assets.len());
         let mut missing = Vec::new();
 
-        for asset in &assets {
-            if let Some(path) = pipeline.raw_exists(&asset.encoded_name) {
-                raw_paths.push(path);
-            } else {
-                missing.push(asset.encoded_name.clone());
+        if use_pinata {
+            // Use thumbnails directory for Pinata mode
+            let thumbnails_dir = pipeline.dirs.root.join("thumbnails");
+            for asset in &assets {
+                let path = thumbnails_dir.join(format!("{}.png", asset.encoded_name));
+                if path.exists() {
+                    image_paths.push(path);
+                } else {
+                    missing.push(asset.encoded_name.clone());
+                }
+            }
+        } else {
+            // Use raw directory for standard mode
+            for asset in &assets {
+                if let Some(path) = pipeline.raw_exists(&asset.encoded_name) {
+                    image_paths.push(path);
+                } else {
+                    missing.push(asset.encoded_name.clone());
+                }
             }
         }
 
         if !missing.is_empty() {
+            let image_type = if use_pinata {
+                "thumbnails"
+            } else {
+                "raw images"
+            };
             anyhow::bail!(
-                "Cannot generate sprites: {} raw images missing. Run without --skip-images first.",
-                missing.len()
+                "Cannot generate sprites: {} {} missing. Run without --skip-images first.",
+                missing.len(),
+                image_type
             );
         }
 
-        let total = raw_paths.len();
+        let total = image_paths.len();
         let (sheets, _locations, detected_config) = SpriteGenerator::generate_batch_auto(
             pipeline.config.sprite_max_sheet_size,
-            &raw_paths,
+            &image_paths,
             &pipeline.dirs.sprites,
             |done, _| {
                 if done % 64 == 0 || done == total {
