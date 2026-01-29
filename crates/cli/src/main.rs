@@ -270,9 +270,9 @@ async fn cmd_sync_cardano(
         HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, SpriteIndexBuilder, StringRef,
     };
     use viewer_ingest::{
-        AssetSource, CnftToolsSource, CollectionWriter, HcfBundler, HcfConfig, PinataClient,
-        Pipeline, PipelineConfig, SpriteConfig, SpriteGenerator, TraitAnalysis, fetch_images,
-        fetch_images_iiif, fetch_thumbnails_pinata,
+        AssetSource, CnftToolsSource, CollectionWriter, HcfBundleResult, HcfBundler, HcfConfig,
+        PinataClient, Pipeline, PipelineConfig, SpriteConfig, SpriteGenerator, TraitAnalysis,
+        fetch_images, fetch_images_iiif, fetch_thumbnails_pinata,
     };
 
     println!("Syncing Cardano collection: {}", policy_id);
@@ -689,9 +689,21 @@ async fn cmd_sync_cardano(
         pipeline.save_state().ok();
     }
 
-    // Generate HCF bundles from raw images
-    println!("\n[6/6] Generating HCF bundles...");
-    let hcf_result = {
+    // Generate HCF bundles from raw images (skip in Pinata mode)
+    let hcf_result = if use_pinata {
+        println!("\n[6/6] Skipping HCF generation (Pinata mode - viewer fetches from gateway)");
+        tracing::info!("Skipping HCF generation in Pinata mode");
+
+        // Return empty result - no HCF files generated
+        HcfBundleResult {
+            shards: vec![],
+            locations: vec![],
+            total_size: 0,
+            max_image_size: 0,
+        }
+    } else {
+        println!("\n[6/6] Generating HCF bundles...");
+
         // Collect raw image paths in asset order (same as sprites)
         let raw_paths: Vec<std::path::PathBuf> = assets
             .iter()
@@ -733,7 +745,12 @@ async fn cmd_sync_cardano(
     };
 
     // Write collection.bin pass 2 (with actual HCF locations and sprite config)
-    println!("\nWriting collection.bin (pass 2 - final with HCF)...");
+    let pass2_label = if use_pinata {
+        "final, no HCF"
+    } else {
+        "final with HCF"
+    };
+    println!("\nWriting collection.bin (pass 2 - {})...", pass2_label);
     {
         // Create sources section
         let sources = SourcesSection::new(vec![SourceMetadata {
@@ -746,22 +763,29 @@ async fn cmd_sync_cardano(
                 .as_secs() as u32,
         }]);
 
-        // Detect image format from first raw image
-        let image_format = assets
-            .first()
-            .and_then(|a| pipeline.raw_exists(&a.encoded_name))
-            .and_then(|p| p.extension().map(|e| e.to_owned()))
-            .and_then(|ext| ext.to_str().map(|s| s.to_lowercase()))
-            .map(|ext| match ext.as_str() {
-                "jpg" | "jpeg" => ImageFormat::Jpeg,
-                "png" => ImageFormat::Png,
-                "webp" => ImageFormat::WebP,
-                "avif" => ImageFormat::Avif,
-                _ => ImageFormat::WebP,
-            })
-            .unwrap_or(ImageFormat::WebP);
+        // Detect image format
+        // Pinata mode: use WebP (gateway will convert)
+        // Standard mode: detect from first raw image
+        let image_format = if use_pinata {
+            ImageFormat::WebP
+        } else {
+            assets
+                .first()
+                .and_then(|a| pipeline.raw_exists(&a.encoded_name))
+                .and_then(|p| p.extension().map(|e| e.to_owned()))
+                .and_then(|ext| ext.to_str().map(|s| s.to_lowercase()))
+                .map(|ext| match ext.as_str() {
+                    "jpg" | "jpeg" => ImageFormat::Jpeg,
+                    "png" => ImageFormat::Png,
+                    "webp" => ImageFormat::WebP,
+                    "avif" => ImageFormat::Avif,
+                    _ => ImageFormat::WebP,
+                })
+                .unwrap_or(ImageFormat::WebP)
+        };
 
-        // HCF metadata with actual values
+        // HCF metadata
+        // shard_count = 0 indicates Pinata mode (no HCF files)
         let hcf_metadata = HcfMetadata {
             shard_size: pipeline.config.hcf_shard_size as u32,
             shard_count: hcf_result.shards.len() as u16,
@@ -807,8 +831,14 @@ async fn cmd_sync_cardano(
             writer.add_token(token)?;
         }
 
-        // Write with actual HCF locations
-        writer.write_to_file(&collection_bin_path, &hcf_result.locations)?;
+        // Write collection.bin
+        if use_pinata {
+            // Pinata mode: no HCF locations
+            writer.write_to_file_without_hcf(&collection_bin_path)?;
+        } else {
+            // Standard mode: with HCF locations
+            writer.write_to_file(&collection_bin_path, &hcf_result.locations)?;
+        }
 
         let file_size = std::fs::metadata(&collection_bin_path)?.len();
         println!(
@@ -825,15 +855,45 @@ async fn cmd_sync_cardano(
             sprite_config_actual.grid_rows,
             sprite_config_actual.thumbs_per_sheet()
         );
+        if use_pinata {
+            println!("  Mode: Pinata (viewer fetches images from gateway)");
+        }
         tracing::info!(
-            "Wrote collection.bin pass 2: {} bytes, {} tokens, sprite config: {}x{} @ {}x{}",
+            "Wrote collection.bin pass 2: {} bytes, {} tokens, sprite config: {}x{} @ {}x{}, pinata_mode: {}",
             file_size,
             assets.len(),
             sprite_config_actual.thumb_width,
             sprite_config_actual.thumb_height,
             sprite_config_actual.grid_columns,
-            sprite_config_actual.grid_rows
+            sprite_config_actual.grid_rows,
+            use_pinata
         );
+    }
+
+    // Write pinata.json config if in Pinata mode
+    if use_pinata {
+        let pinata_config_path = pipeline.dirs.root.join("pinata.json");
+        let gateway_host = pinata_client
+            .as_ref()
+            .and_then(|p| p.gateway_host().map(|s| s.to_string()))
+            .unwrap_or_default();
+
+        let pinata_json = serde_json::json!({
+            "enabled": true,
+            "gateway_host": gateway_host,
+            "group_id": config.pinata.group_id,
+        });
+
+        std::fs::write(
+            &pinata_config_path,
+            serde_json::to_string_pretty(&pinata_json)?,
+        )?;
+        println!(
+            "  Written {} (gateway: {})",
+            pinata_config_path.display(),
+            gateway_host
+        );
+        tracing::info!("Wrote pinata.json with gateway: {}", gateway_host);
     }
 
     // Copy final output

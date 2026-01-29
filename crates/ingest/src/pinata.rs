@@ -239,12 +239,15 @@ impl PinataClient {
 
     /// Build an optimized image URL for a CID.
     ///
-    /// Uses Pinata's image optimization parameters.
-    pub fn image_url(&self, cid: &str, width: u32, format: &str) -> Option<String> {
+    /// Uses Pinata's image optimization parameters:
+    /// - `img-width` + `img-height` = square bounding box
+    /// - `img-fit=contain` = preserve aspect ratio, letterbox/pillarbox if needed
+    /// - `img-format` = explicit format (png for thumbnails, webp for viewer)
+    pub fn image_url(&self, cid: &str, size: u32, format: &str) -> Option<String> {
         let host = self.gateway_host.as_ref()?;
         Some(format!(
-            "https://{}/ipfs/{}?img-width={}&img-format={}",
-            host, cid, width, format
+            "https://{}/ipfs/{}?img-width={}&img-height={}&img-fit=contain&img-format={}",
+            host, cid, size, size, format
         ))
     }
 
