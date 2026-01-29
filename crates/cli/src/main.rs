@@ -414,116 +414,133 @@ async fn cmd_sync_cardano(
         let pinata = pinata_client.as_ref().unwrap();
         let group_id = config.pinata.group_id.as_ref().unwrap();
 
-        // Use pre-configured group ID
-        println!("\n[4a/6] Setting up Pinata group...");
-        println!("  Using group ID: {}", group_id);
-
-        // Extract (name, CID) pairs from assets
-        let pin_items: Vec<(String, String)> = assets
-            .iter()
-            .filter_map(|a| {
-                a.image_url
-                    .as_ref()
-                    .and_then(|url| viewer_ingest::extract_cid(url))
-                    .map(|cid| (a.display_name.clone(), cid))
+        // Check if all thumbnails already exist locally - if so, skip Pinata sync
+        let thumbnails_dir = pipeline.dirs.root.join("thumbnails");
+        let all_thumbnails_present = assets.iter().all(|asset| {
+            ["png", "jpg", "webp", "gif"].iter().any(|ext| {
+                thumbnails_dir
+                    .join(format!("{}.{}", asset.encoded_name, ext))
+                    .exists()
             })
-            .collect();
+        });
 
-        println!(
-            "  Ensuring {} CIDs are pinned (rate limited to ~150/min)...",
-            pin_items.len()
-        );
-        let pinned = pinata
-            .ensure_cids_pinned(
-                group_id,
-                &pin_items,
-                Some(&|done, total| {
-                    print!("\r  Queueing pins: {}/{}    ", done, total);
-                    use std::io::Write;
-                    std::io::stdout().flush().ok();
-                }),
-            )
-            .await?;
-        println!("\r  Queued {} new CIDs for pinning    ", pinned);
+        if all_thumbnails_present {
+            println!(
+                "\n[4/6] All {} thumbnails present, skipping Pinata sync",
+                assets.len()
+            );
+        } else {
+            // Use pre-configured group ID
+            println!("\n[4a/6] Setting up Pinata group...");
+            println!("  Using group ID: {}", group_id);
 
-        // Extract just CIDs for wait_for_pins
-        let cids: Vec<String> = pin_items.into_iter().map(|(_, cid)| cid).collect();
+            // Extract (name, CID) pairs from assets
+            let pin_items: Vec<(String, String)> = assets
+                .iter()
+                .filter_map(|a| {
+                    a.image_url
+                        .as_ref()
+                        .and_then(|url| viewer_ingest::extract_cid(url))
+                        .map(|cid| (a.display_name.clone(), cid))
+                })
+                .collect();
 
-        // Wait for pins to complete if we queued any
-        if pinned > 0 {
-            println!("  Waiting for pins to complete...");
-            let failed_pins = pinata
-                .wait_for_pins(
-                    &cids,
-                    Some(&|completed, total, status| {
-                        print!("\r  Pin status: {}/{} ({})    ", completed, total, status);
+            println!(
+                "  Ensuring {} CIDs are pinned (rate limited to ~150/min)...",
+                pin_items.len()
+            );
+            let pinned = pinata
+                .ensure_cids_pinned(
+                    group_id,
+                    &pin_items,
+                    Some(&|done, total| {
+                        print!("\r  Queueing pins: {}/{}    ", done, total);
                         use std::io::Write;
                         std::io::stdout().flush().ok();
                     }),
                 )
                 .await?;
+            println!("\r  Queued {} new CIDs for pinning    ", pinned);
 
-            if !failed_pins.is_empty() {
-                println!("\r  Warning: {} CIDs failed to pin    ", failed_pins.len());
-                for cid in failed_pins.iter().take(5) {
-                    println!("    - {}", cid);
+            // Extract just CIDs for wait_for_pins
+            let cids: Vec<String> = pin_items.into_iter().map(|(_, cid)| cid).collect();
+
+            // Wait for pins to complete if we queued any
+            if pinned > 0 {
+                println!("  Waiting for pins to complete...");
+                let failed_pins = pinata
+                    .wait_for_pins(
+                        &cids,
+                        Some(&|completed, total, status| {
+                            print!("\r  Pin status: {}/{} ({})    ", completed, total, status);
+                            use std::io::Write;
+                            std::io::stdout().flush().ok();
+                        }),
+                    )
+                    .await?;
+
+                if !failed_pins.is_empty() {
+                    println!("\r  Warning: {} CIDs failed to pin    ", failed_pins.len());
+                    for cid in failed_pins.iter().take(5) {
+                        println!("    - {}", cid);
+                    }
+                    if failed_pins.len() > 5 {
+                        println!("    ... and {} more", failed_pins.len() - 5);
+                    }
+                } else {
+                    println!("\r  All pins completed successfully    ");
                 }
-                if failed_pins.len() > 5 {
-                    println!("    ... and {} more", failed_pins.len() - 5);
-                }
-            } else {
-                println!("\r  All pins completed successfully    ");
             }
-        }
 
-        // Fetch thumbnails
-        if !skip_images {
-            println!("\n[4b/6] Fetching thumbnails from Pinata...");
-            let progress_cb = Box::new(
-                |processed: usize, total: usize, fetched: usize, failed: usize| {
-                    print!(
-                        "\r  Progress: {}/{} ({} new, {} failed)    ",
-                        processed, total, fetched, failed
-                    );
-                    use std::io::Write;
-                    std::io::stdout().flush().ok();
-                },
-            );
+            // Fetch thumbnails
+            if !skip_images {
+                println!("\n[4b/6] Fetching thumbnails from Pinata...");
+                let progress_cb = Box::new(
+                    |processed: usize, total: usize, fetched: usize, failed: usize| {
+                        print!(
+                            "\r  Progress: {}/{} ({} new, {} failed)    ",
+                            processed, total, fetched, failed
+                        );
+                        use std::io::Write;
+                        std::io::stdout().flush().ok();
+                    },
+                );
 
-            let result = fetch_thumbnails_pinata(
-                &mut pipeline,
-                &assets,
-                pinata,
-                config.pinata.thumbnail_size,
-                Some(progress_cb),
-            )
-            .await?;
+                let result = fetch_thumbnails_pinata(
+                    &mut pipeline,
+                    &assets,
+                    pinata,
+                    config.pinata.thumbnail_size,
+                    Some(progress_cb),
+                )
+                .await?;
 
-            println!(
-                "\r  Complete: {} fetched, {} skipped, {} failed    ",
-                result.fetched,
-                result.skipped,
-                result.failed.len()
-            );
-
-            if !result.failed.is_empty() {
-                tracing::error!("Failed to fetch {} thumbnails", result.failed.len());
-                println!("\nFailed to fetch {} thumbnails:", result.failed.len());
-                for id in result.failed.iter().take(10) {
-                    tracing::error!("  Failed thumbnail: {}", id);
-                    println!("  - {}", id);
-                }
-                if result.failed.len() > 10 {
-                    println!("  ... and {} more", result.failed.len() - 10);
-                }
-                anyhow::bail!(
-                    "Cannot continue with {} failed thumbnails. Fix the issues and retry.",
+                println!(
+                    "\r  Complete: {} fetched, {} skipped, {} failed    ",
+                    result.fetched,
+                    result.skipped,
                     result.failed.len()
                 );
+
+                if !result.failed.is_empty() {
+                    tracing::error!("Failed to fetch {} thumbnails", result.failed.len());
+                    println!("\nFailed to fetch {} thumbnails:", result.failed.len());
+                    for id in result.failed.iter().take(10) {
+                        tracing::error!("  Failed thumbnail: {}", id);
+                        println!("  - {}", id);
+                    }
+                    if result.failed.len() > 10 {
+                        println!("  ... and {} more", result.failed.len() - 10);
+                    }
+                    anyhow::bail!(
+                        "Cannot continue with {} failed thumbnails. Fix the issues and retry.",
+                        result.failed.len()
+                    );
+                }
+            } else {
+                println!("\n[4b/6] Skipping thumbnail fetch (--skip-images)");
             }
-        } else {
-            println!("\n[4b/6] Skipping thumbnail fetch (--skip-images)");
-        }
+        } // end if !all_thumbnails_present
     } else {
         // Standard IPFS/IIIF fetch
         if !skip_images {
@@ -589,11 +606,14 @@ async fn cmd_sync_cardano(
         let mut missing = Vec::new();
 
         if use_pinata {
-            // Use thumbnails directory for Pinata mode
+            // Use thumbnails directory for Pinata mode (may be png, jpg, webp, or gif)
             let thumbnails_dir = pipeline.dirs.root.join("thumbnails");
             for asset in &assets {
-                let path = thumbnails_dir.join(format!("{}.png", asset.encoded_name));
-                if path.exists() {
+                let found = ["png", "jpg", "webp", "gif"]
+                    .iter()
+                    .map(|ext| thumbnails_dir.join(format!("{}.{}", asset.encoded_name, ext)))
+                    .find(|p| p.exists());
+                if let Some(path) = found {
                     image_paths.push(path);
                 } else {
                     missing.push(asset.encoded_name.clone());

@@ -426,9 +426,13 @@ pub async fn fetch_thumbnails_pinata(
         let mut handles = Vec::with_capacity(batch.len());
 
         for asset in batch {
-            // Skip if already fetched
-            let output_path = thumbnails_dir.join(format!("{}.png", asset.encoded_name));
-            if output_path.exists() {
+            // Skip if already fetched (check for any image extension)
+            let exists = ["png", "jpg", "webp", "gif"].iter().any(|ext| {
+                thumbnails_dir
+                    .join(format!("{}.{}", asset.encoded_name, ext))
+                    .exists()
+            });
+            if exists {
                 skipped.fetch_add(1, Ordering::Relaxed);
 
                 // Check if we should report progress after skip
@@ -466,7 +470,7 @@ pub async fn fetch_thumbnails_pinata(
             let pinata = pinata.clone();
             let cid = cid.to_string();
             let encoded_name = asset.encoded_name.clone();
-            let output_path = output_path.clone();
+            let thumbnails_dir = thumbnails_dir.clone();
             let fetched = fetched.clone();
             let failed_count = failed_count.clone();
             let failed_ids = failed_ids.clone();
@@ -478,7 +482,8 @@ pub async fn fetch_thumbnails_pinata(
                 let _permit = permit;
 
                 match pinata.fetch_thumbnail(&cid, thumbnail_size).await {
-                    Ok(bytes) => {
+                    Ok((bytes, ext)) => {
+                        let output_path = thumbnails_dir.join(format!("{}.{}", encoded_name, ext));
                         if let Err(e) = std::fs::write(&output_path, &bytes) {
                             warn!(
                                 path = %output_path.display(),
@@ -491,6 +496,7 @@ pub async fn fetch_thumbnails_pinata(
                             trace!(
                                 path = %output_path.display(),
                                 bytes = bytes.len(),
+                                format = %ext,
                                 "Saved Pinata thumbnail"
                             );
                             fetched.fetch_add(1, Ordering::Relaxed);

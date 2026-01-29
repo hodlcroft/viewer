@@ -25,6 +25,7 @@ pub struct PinataClient {
     client: Client,
     jwt: String,
     gateway_host: Option<String>,
+    gateway_key: Option<String>,
 }
 
 /// Pinata API errors.
@@ -156,10 +157,12 @@ impl PinataClient {
     ///
     /// Requires `PINATA_API_JWT` to be set.
     /// Optionally uses `PINATA_GATEWAY_HOST` for optimized image URLs.
+    /// Optionally uses `PINATA_GATEWAY_KEY` for dedicated gateway authentication.
     pub fn from_env() -> Result<Self, PinataError> {
         let jwt = std::env::var("PINATA_API_JWT").map_err(|_| PinataError::MissingJwt)?;
 
         let gateway_host = std::env::var("PINATA_GATEWAY_HOST").ok();
+        let gateway_key = std::env::var("PINATA_GATEWAY_KEY").ok();
 
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -170,6 +173,7 @@ impl PinataClient {
             client,
             jwt,
             gateway_host,
+            gateway_key,
         })
     }
 
@@ -243,12 +247,21 @@ impl PinataClient {
     /// - `img-width` + `img-height` = square bounding box
     /// - `img-fit=contain` = preserve aspect ratio, letterbox/pillarbox if needed
     /// - `img-format` = explicit format (png for thumbnails, webp for viewer)
+    /// - `pinataGatewayToken` = authentication for dedicated gateways
     pub fn image_url(&self, cid: &str, size: u32, format: &str) -> Option<String> {
         let host = self.gateway_host.as_ref()?;
-        Some(format!(
+        let mut url = format!(
             "https://{}/ipfs/{}?img-width={}&img-height={}&img-fit=contain&img-format={}",
             host, cid, size, size, format
-        ))
+        );
+
+        // Add gateway key if configured (required for dedicated gateways)
+        if let Some(key) = &self.gateway_key {
+            url.push_str("&pinataGatewayToken=");
+            url.push_str(key);
+        }
+
+        Some(url)
     }
 
     /// List groups, optionally filtering by name.
@@ -478,7 +491,9 @@ impl PinataClient {
         }
 
         // Get existing files in group
+        eprint!("  Fetching files already in group...");
         let existing_files = self.list_files_in_group(group_id).await?;
+        eprintln!(" {} files", existing_files.len());
         info!(
             "Group {} has {} files already",
             group_id,
@@ -489,7 +504,9 @@ impl PinataClient {
             existing_files.iter().map(|f| f.cid.as_str()).collect();
 
         // Get ungrouped files - these are pinned but not in any group yet
+        eprint!("  Fetching ungrouped files...");
         let ungrouped_files = self.list_ungrouped_files().await?;
+        eprintln!(" {} files", ungrouped_files.len());
         info!(
             "Account has {} ungrouped pinned files",
             ungrouped_files.len()
@@ -826,8 +843,15 @@ impl PinataClient {
 
     /// Fetch a thumbnail image from Pinata with optimization.
     ///
-    /// Returns PNG bytes at the specified size.
-    pub async fn fetch_thumbnail(&self, cid: &str, size: u32) -> Result<Vec<u8>, PinataError> {
+    /// Returns image bytes at the specified size. The format may vary based on the
+    /// source image - Pinata may not always convert formats successfully.
+    /// Returns (bytes, extension) where extension is "png", "webp", "jpg", or "gif".
+    pub async fn fetch_thumbnail(
+        &self,
+        cid: &str,
+        size: u32,
+    ) -> Result<(Vec<u8>, &'static str), PinataError> {
+        // Request PNG but accept whatever we get back
         let url = self.image_url(cid, size, "png").ok_or_else(|| {
             PinataError::InvalidResponse("No gateway host configured".to_string())
         })?;
@@ -844,14 +868,22 @@ impl PinataClient {
 
         let bytes = response.bytes().await?;
 
-        // Validate it's a PNG
-        if !bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        // Detect format from magic bytes
+        let ext = if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+            "png"
+        } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            "jpg"
+        } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+            "webp"
+        } else if bytes.starts_with(&[0x47, 0x49, 0x46, 0x38]) {
+            "gif"
+        } else {
             return Err(PinataError::InvalidResponse(
-                "Response is not a PNG image".to_string(),
+                "Response is not a recognized image format".to_string(),
             ));
-        }
+        };
 
-        Ok(bytes.to_vec())
+        Ok((bytes.to_vec(), ext))
     }
 
     /// Query pin requests (jobs in the pinning queue).
