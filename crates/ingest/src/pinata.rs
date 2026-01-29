@@ -15,6 +15,10 @@ const PINATA_API_BASE: &str = "https://api.pinata.cloud/v3";
 /// Pinata can handle ~250 active requests before backfilling.
 const PIN_QUEUE_CAPACITY: usize = 100;
 
+/// Delay between API requests to respect rate limits.
+/// 250 requests/minute = ~4 requests/second = 250ms between requests.
+const API_RATE_LIMIT_DELAY: Duration = Duration::from_millis(250);
+
 /// Pinata API client.
 #[derive(Clone)]
 pub struct PinataClient {
@@ -355,10 +359,13 @@ impl PinataClient {
             }
 
             let result: FilesListResponse = response.json().await?;
+            let files_in_page = result.data.files.len();
             all_files.extend(result.data.files);
 
+            // Only continue pagination if we got a full page of results
+            // Pinata sometimes returns next_page_token even with empty/partial results
             match result.data.next_page_token {
-                Some(token) if !token.is_empty() => page_token = Some(token),
+                Some(token) if !token.is_empty() && files_in_page > 0 => page_token = Some(token),
                 _ => break,
             }
         }
@@ -607,9 +614,7 @@ impl PinataClient {
             return Ok(0);
         }
 
-        // Rate limit: 180 requests/minute = 3 requests/second
-        // Use 2.5/sec to have some buffer
-        let delay = Duration::from_millis(400);
+        let delay = API_RATE_LIMIT_DELAY;
         let mut pinned = 0;
         let mut added_to_group = 0;
         let mut failed = 0;
@@ -709,8 +714,6 @@ impl PinataClient {
         info!("Cancelling {} backfilled pin requests", to_cancel.len());
 
         let mut cancelled = 0;
-        let delay = Duration::from_millis(400); // Rate limit
-
         for (i, job) in to_cancel.iter().enumerate() {
             match self.cancel_pin_request(&job.id).await {
                 Ok(()) => {
@@ -727,7 +730,7 @@ impl PinataClient {
             }
 
             if i + 1 < to_cancel.len() {
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep(API_RATE_LIMIT_DELAY).await;
             }
         }
 
@@ -749,7 +752,6 @@ impl PinataClient {
 
         let mut cancelled = 0;
         let mut failed = 0;
-        let delay = Duration::from_millis(400); // Rate limit
 
         for (i, job) in jobs.iter().enumerate() {
             match self.cancel_pin_request(&job.id).await {
@@ -769,7 +771,7 @@ impl PinataClient {
             }
 
             if i + 1 < jobs.len() {
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep(API_RATE_LIMIT_DELAY).await;
             }
         }
 
@@ -886,15 +888,17 @@ impl PinataClient {
             let result: PinRequestsResponse = serde_json::from_str(&text).map_err(|e| {
                 PinataError::InvalidResponse(format!("Failed to parse pin requests: {}", e))
             })?;
+            let jobs_in_page = result.data.jobs.len();
             debug!(
                 "Pin requests page: {} jobs, next_page_token: {:?}",
-                result.data.jobs.len(),
-                result.data.next_page_token
+                jobs_in_page, result.data.next_page_token
             );
             all_jobs.extend(result.data.jobs);
 
+            // Only continue pagination if we got results
+            // Pinata sometimes returns next_page_token even with empty results
             match result.data.next_page_token {
-                Some(token) if !token.is_empty() => page_token = Some(token),
+                Some(token) if !token.is_empty() && jobs_in_page > 0 => page_token = Some(token),
                 _ => break,
             }
         }
