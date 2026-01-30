@@ -262,6 +262,7 @@ pub fn GalleryPage() -> impl IntoView {
             <Suspense fallback=|| view! {
                 <GalleryHeader
                     slug="".to_string()
+                    collection_name=None
                     total_count=0
                     filtered_count=0
                     trait_options=vec![]
@@ -330,10 +331,12 @@ pub fn GalleryPage() -> impl IntoView {
                                 let filtered_count = Signal::derive(move || filtered_tokens.get().len());
 
                                 let hide_rarity = collection.with_value(|c| c.hide_rarity);
+                                let collection_name = collection.with_value(|c| c.name.clone());
 
                                 view! {
                                     <GalleryHeader
                                         slug=s.clone()
+                                        collection_name=collection_name
                                         total_count=total
                                         filtered_count=filtered_count
                                         trait_options=trait_options
@@ -352,6 +355,7 @@ pub fn GalleryPage() -> impl IntoView {
                             Err(e) => view! {
                                 <GalleryHeader
                                     slug=slug()
+                                    collection_name=None
                                     total_count=0
                                     filtered_count=0
                                     trait_options=vec![]
@@ -375,6 +379,7 @@ pub fn GalleryPage() -> impl IntoView {
 #[component]
 fn GalleryHeader(
     slug: String,
+    collection_name: Option<String>,
     total_count: usize,
     #[prop(into)] filtered_count: Signal<usize>,
     trait_options: Vec<TraitValueOption>,
@@ -461,11 +466,14 @@ fn GalleryHeader(
         }
     };
 
+    // Use collection name if available, otherwise fall back to slug
+    let display_name = collection_name.unwrap_or_else(|| slug.clone());
+
     view! {
         <div class="gallery-header">
             <div class="gallery-header-main">
                 <div class="gallery-header-left">
-                    <h1 class="gallery-title">{slug.clone()}</h1>
+                    <h1 class="gallery-title">{display_name}</h1>
                 </div>
                 <div class="gallery-header-right">
                     {if loading {

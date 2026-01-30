@@ -124,6 +124,8 @@ pub struct HcfLocation {
 pub struct CollectionData {
     /// Collection slug
     pub slug: String,
+    /// Collection display name (if provided in binary, otherwise None = use slug)
+    pub name: Option<String>,
     /// Raw binary data (kept for zero-copy access)
     pub raw: Arc<Vec<u8>>,
     /// Parsed header info
@@ -202,6 +204,14 @@ impl CollectionData {
         let string_table_start = header.string_table_offset as usize + 4;
         let string_table_end = header.trait_schema_offset as usize;
         let string_table_data = &data[string_table_start..string_table_end];
+
+        // Parse collection name from header (0 = use slug)
+        let collection_name = if header.name_ref != 0 {
+            let name = read_string(string_table_data, header.name_ref as u32);
+            if name.is_empty() { None } else { Some(name) }
+        } else {
+            None
+        };
 
         // Parse trait schema
         let trait_schema_start = header.trait_schema_offset as usize;
@@ -375,6 +385,7 @@ impl CollectionData {
 
         Ok(CollectionData {
             slug,
+            name: collection_name,
             raw: Arc::new(data),
             token_count: header.token_count,
             trait_count: header.trait_count,

@@ -106,6 +106,8 @@ pub struct CollectionWriter {
     hcf_index_size: HcfIndexSize,
     /// Hide rarity rankings in the UI
     hide_rarity: bool,
+    /// Collection display name (None = use slug)
+    collection_name: Option<String>,
 }
 
 impl CollectionWriter {
@@ -140,6 +142,29 @@ impl CollectionWriter {
         max_image_size: u32,
         hide_rarity: bool,
     ) -> Option<Self> {
+        Self::with_name(
+            sources,
+            hcf_metadata,
+            total_trait_values,
+            total_hcf_size,
+            max_image_size,
+            hide_rarity,
+            None,
+        )
+    }
+
+    /// Create a new collection writer with display name.
+    ///
+    /// Returns None if total_trait_values exceeds the maximum supported.
+    pub fn with_name(
+        sources: SourcesSection,
+        hcf_metadata: HcfMetadata,
+        total_trait_values: usize,
+        total_hcf_size: u64,
+        max_image_size: u32,
+        hide_rarity: bool,
+        collection_name: Option<String>,
+    ) -> Option<Self> {
         let bitmap_size = BitmapSize::for_count(total_trait_values)?;
         let hcf_index_size = HcfIndexSize::for_sizes(total_hcf_size, max_image_size);
 
@@ -153,6 +178,7 @@ impl CollectionWriter {
             bitmap_size,
             hcf_index_size,
             hide_rarity,
+            collection_name,
         })
     }
 
@@ -199,7 +225,7 @@ impl CollectionWriter {
     ///
     /// `hcf_locations` must be in the same order as tokens were added.
     pub fn write_to_file(
-        &self,
+        &mut self,
         path: &Path,
         hcf_locations: &[ImageLocation],
     ) -> Result<(), WriterError> {
@@ -222,7 +248,7 @@ impl CollectionWriter {
     /// This writes a valid collection.bin with placeholder HCF locations (0, 0).
     /// Use this to establish deterministic ordering before sprite/HCF generation.
     /// Call `write_to_file` later with actual HCF locations for the final version.
-    pub fn write_to_file_without_hcf(&self, path: &Path) -> Result<(), WriterError> {
+    pub fn write_to_file_without_hcf(&mut self, path: &Path) -> Result<(), WriterError> {
         // Create placeholder locations with zeros
         let placeholder_locations: Vec<ImageLocation> = (0..self.tokens.len())
             .map(|_| ImageLocation {
@@ -244,10 +270,17 @@ impl CollectionWriter {
     ///
     /// `hcf_locations` must be in the same order as tokens were added.
     pub fn write(
-        &self,
+        &mut self,
         writer: &mut impl Write,
         hcf_locations: &[ImageLocation],
     ) -> Result<(), WriterError> {
+        // Add collection name to string table if provided
+        let name_ref = if let Some(ref name) = self.collection_name {
+            Some(self.strings.add(name)?)
+        } else {
+            None
+        };
+
         // Build string table (clone since build consumes)
         let string_table = self.strings.clone().build()?;
         let string_table_bytes = string_table.to_bytes();
@@ -305,6 +338,10 @@ impl CollectionWriter {
         );
         if self.hide_rarity {
             header.flags |= viewer_binary::FLAG_HIDE_RARITY;
+        }
+        // Set collection name if provided
+        if let Some(nr) = name_ref {
+            header.name_ref = nr.0 as u16;
         }
         header.string_table_offset = string_table_offset;
         header.trait_schema_offset = trait_schema_offset;
