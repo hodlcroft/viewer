@@ -27,6 +27,11 @@ async-trait = "0.1"
 cid = "0.11"
 urlencoding = "2"
 
+# For CID computation
+multihash-codetable = { version = "0.1", features = ["sha2"] }
+prost = "0.13"
+hex = "0.4"
+
 # Image processing
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 rayon = "1.10"

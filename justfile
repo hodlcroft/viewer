@@ -52,3 +52,25 @@ sync-cardano-debug policy_id:
 # Run with trace logging (very verbose)
 sync-cardano-trace policy_id:
     RUST_LOG=trace cargo run --package viewer-cli -- sync cardano {{ policy_id }}
+
+# CID commands
+
+# Check CIDs for a collection (analyze only)
+cid-check policy_id:
+    cargo run --package viewer-cli -- cid check {{ policy_id }}
+
+# Validate local raw files against collection CIDs
+cid-validate policy_id:
+    cargo run --package viewer-cli -- cid check {{ policy_id }} --local-dir .build/{{ policy_id }}/raw
+
+# Compute CID for a local file
+cid-compute path:
+    cargo run --package viewer-cli -- cid compute {{ path }}
+
+# Compute CID and try to match a target
+cid-match path target:
+    cargo run --package viewer-cli -- cid compute {{ path }} --target {{ target }}
+
+# Show info about a CID
+cid-info cid:
+    cargo run --package viewer-cli -- cid info {{ cid }}
