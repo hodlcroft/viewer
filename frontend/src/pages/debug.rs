@@ -51,6 +51,7 @@ fn DebugInfo(data: CollectionData) -> impl IntoView {
                     <tbody>
                         <tr><td>"Token Count"</td><td>{data.token_count}</td></tr>
                         <tr><td>"Trait Count"</td><td>{data.trait_count}</td></tr>
+                        <tr><td>"Hide Rarity"</td><td>{if data.hide_rarity { "true" } else { "false" }}</td></tr>
                         <tr><td>"Sprite Thumb Size"</td><td>{format!("{}x{}", data.sprite_thumb_width, data.sprite_thumb_height)}</td></tr>
                         <tr><td>"Sprite Grid"</td><td>{format!("{}x{}", data.sprite_grid_columns, data.sprite_grid_rows)}</td></tr>
                         <tr><td>"Sprite Sheet Count"</td><td>{data.sprite_sheet_count}</td></tr>

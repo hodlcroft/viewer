@@ -629,6 +629,9 @@ pub fn App() -> impl IntoView {
     // Provide shared cache for collection data
     provide_context(CollectionCache::default());
 
+    // Provide shared sort context (persists between navigations)
+    provide_context(pages::SortContext::new());
+
     view! {
         <Html {..} lang="en" data-bs-theme="dark"/>
         <Title text="NFT Collection Viewer"/>

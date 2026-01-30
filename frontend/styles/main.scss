@@ -145,6 +145,21 @@ a {
     white-space: nowrap;
 }
 
+.sort-select {
+    font-size: 13px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+
+    &:focus {
+        outline: none;
+        border-color: var(--accent-color);
+    }
+}
+
 .spinner-small {
     width: 16px;
     height: 16px;
@@ -412,6 +427,10 @@ a {
         display: block;
     }
 
+    .nft-card-image {
+        position: relative;
+    }
+
     .nft-card-sprite {
         width: 100%;
         aspect-ratio: 1;
@@ -424,22 +443,31 @@ a {
             calc(var(--sprite-row, 0) * 33.3333%);
     }
 
+    .rank-badge {
+        position: absolute;
+        top: 6px;
+        left: 6px;
+        font-size: 0.65rem;
+        font-weight: 600;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 2px 6px;
+        border-radius: 4px;
+        backdrop-filter: blur(4px);
+        display: flex;
+        align-items: center;
+        gap: 3px;
+
+        svg {
+            width: 0.7em;
+            height: 0.7em;
+        }
+    }
+
     .nft-card-info {
         padding: 0.75rem 1rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
 
         strong {
             color: var(--text-primary);
-        }
-
-        .rank {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            background: var(--bg-tertiary);
-            padding: 0.25rem 0.5rem;
-            border-radius: 4px;
         }
     }
 }

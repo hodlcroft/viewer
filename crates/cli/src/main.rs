@@ -1048,8 +1048,62 @@ fn cmd_info(path: &PathBuf) -> anyhow::Result<()> {
         if bin_path.exists() {
             println!("Bundle info for {}", path.display());
             println!("  Format: Binary (collection.bin)");
-            // TODO: Read and display binary header info
-            println!("  (Binary format parsing not yet implemented)");
+
+            // Parse and display binary header
+            let data = std::fs::read(&bin_path)?;
+            if data.len() >= viewer_binary::HEADER_SIZE {
+                let header_bytes: [u8; viewer_binary::HEADER_SIZE] =
+                    data[..viewer_binary::HEADER_SIZE].try_into().unwrap();
+                let header = viewer_binary::Header::from_bytes(&header_bytes);
+
+                println!("  Version: {}", header.version);
+                println!("  Flags: 0x{:04x}", header.flags);
+                println!("    - hide_rarity: {}", header.hide_rarity());
+                println!("    - multi_source: {}", header.is_multi_source());
+                println!("  Token count: {}", header.token_count);
+                println!("  Trait count: {}", header.trait_count);
+                if let Some(bitmap_size) = header.bitmap_size() {
+                    println!("  Bitmap size: {}", bitmap_size);
+                }
+                if let Some(hcf_index_size) = header.hcf_index_size() {
+                    println!("  HCF index size: {:?}", hcf_index_size);
+                }
+                println!("  Source count: {}", header.source_count);
+
+                // Show section offsets
+                println!("  Sections:");
+                println!("    string_table: 0x{:x}", header.string_table_offset);
+                println!("    trait_schema: 0x{:x}", header.trait_schema_offset);
+                println!("    token_table: 0x{:x}", header.token_table_offset);
+                println!("    hcf_metadata: 0x{:x}", header.hcf_metadata_offset);
+                println!("    hcf_index: 0x{:x}", header.hcf_index_offset);
+                println!("    asset_id_index: 0x{:x}", header.asset_id_index_offset);
+
+                // Show first few tokens' rarity data
+                if let Some(bitmap_size) = header.bitmap_size() {
+                    let token_fixed_size = viewer_binary::TOKEN_FIXED_SIZE;
+                    let bitmap_bytes = bitmap_size.byte_size();
+                    let token_entry_size = token_fixed_size + bitmap_bytes;
+                    let token_table_start = header.token_table_offset as usize;
+
+                    println!("  Sample tokens (first 5):");
+                    for i in 0..5.min(header.token_count as usize) {
+                        let offset = token_table_start + i * token_entry_size;
+                        if offset + token_fixed_size <= data.len() {
+                            let entry = viewer_binary::TokenEntry::read_fixed(
+                                &data[offset..],
+                                header.is_multi_source(),
+                            );
+                            println!(
+                                "    Token {}: rarity_rank={}, rarity_score={}, name_ref=0x{:x}",
+                                i, entry.rarity_rank, entry.rarity_score, entry.name_ref
+                            );
+                        }
+                    }
+                }
+            } else {
+                println!("  (File too small to parse header)");
+            }
         } else {
             anyhow::bail!(
                 "No bundle found at {} (missing index.json and collection.bin)",

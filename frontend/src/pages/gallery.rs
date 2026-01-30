@@ -69,6 +69,93 @@ fn build_trait_options(traits: &[TraitInfo], total_tokens: usize) -> Vec<TraitVa
     options
 }
 
+/// Sort order for gallery display
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortOrder {
+    #[default]
+    Default,
+    Rank,
+}
+
+use crate::TokenInfo;
+
+/// Context for sharing sort order and sorted tokens across components
+#[derive(Clone, Copy)]
+pub struct SortContext {
+    pub order: RwSignal<SortOrder>,
+    /// Sorted list of asset_ids in current sort order
+    sorted_ids: RwSignal<Vec<String>>,
+}
+
+impl SortContext {
+    pub fn new() -> Self {
+        Self {
+            order: RwSignal::new(SortOrder::Default),
+            sorted_ids: RwSignal::new(Vec::new()),
+        }
+    }
+
+    pub fn get(&self) -> SortOrder {
+        self.order.get()
+    }
+
+    pub fn set(&self, order: SortOrder) {
+        self.order.set(order);
+    }
+
+    /// Update the sorted token list based on current sort order
+    pub fn update_tokens(&self, tokens: &[TokenInfo]) {
+        let order = self.order.get();
+        let mut sorted: Vec<_> = tokens.iter().collect();
+
+        match order {
+            SortOrder::Default => {
+                // Already in default order (by index)
+            }
+            SortOrder::Rank => {
+                sorted.sort_by_key(|t| t.rarity_rank);
+            }
+        }
+
+        self.sorted_ids.set(sorted.iter().map(|t| t.asset_id.clone()).collect());
+    }
+
+    /// Get the previous asset_id in the sorted list
+    pub fn prev_id(&self, current_id: &str) -> Option<String> {
+        let ids = self.sorted_ids.get();
+        let pos = ids.iter().position(|id| id == current_id)?;
+        if pos > 0 {
+            Some(ids[pos - 1].clone())
+        } else {
+            None
+        }
+    }
+
+    /// Get the next asset_id in the sorted list
+    pub fn next_id(&self, current_id: &str) -> Option<String> {
+        let ids = self.sorted_ids.get();
+        let pos = ids.iter().position(|id| id == current_id)?;
+        if pos + 1 < ids.len() {
+            Some(ids[pos + 1].clone())
+        } else {
+            None
+        }
+    }
+
+    /// Get current position and total count
+    pub fn position(&self, current_id: &str) -> Option<(usize, usize)> {
+        let ids = self.sorted_ids.get();
+        let pos = ids.iter().position(|id| id == current_id)?;
+        Some((pos, ids.len()))
+    }
+}
+
+impl Default for SortContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Context for sharing collection configuration (display settings) across components
 #[derive(Clone, Copy)]
 pub struct CollectionConfig {
@@ -135,6 +222,9 @@ pub fn GalleryPage() -> impl IntoView {
     // Provide filter context for this gallery
     let filter_ctx = FilterContext::new();
     provide_context(filter_ctx);
+
+    // Get sort context from app-level provider
+    let sort_ctx = expect_context::<SortContext>();
 
     // Parse initial filter from URL query param: ?filter=Trait:Value
     Effect::new(move |_| {
@@ -204,11 +294,12 @@ pub fn GalleryPage() -> impl IntoView {
                                 // Store collection for filtering
                                 let collection = StoredValue::new(collection);
 
-                                // Derive filtered tokens reactively
+                                // Derive filtered and sorted tokens reactively
                                 let filtered_tokens = Signal::derive(move || {
                                     let filters = filter_ctx.get_filters();
+                                    let sort = sort_ctx.get();
                                     collection.with_value(|c| {
-                                        if filters.is_empty() {
+                                        let mut tokens: Vec<_> = if filters.is_empty() {
                                             c.tokens.clone()
                                         } else {
                                             let filter_bitmap = build_filter_bitmap(&filters, &c.traits, bitmap_size);
@@ -217,11 +308,28 @@ pub fn GalleryPage() -> impl IntoView {
                                                 .filter(|token| c.token_matches_filter(token, &filter_bitmap))
                                                 .cloned()
                                                 .collect()
+                                        };
+
+                                        // Apply sort order
+                                        match sort {
+                                            SortOrder::Default => {
+                                                // Already in default order (by index)
+                                            }
+                                            SortOrder::Rank => {
+                                                tokens.sort_by_key(|t| t.rarity_rank);
+                                            }
                                         }
+
+                                        // Update sort context with current sorted list for detail page navigation
+                                        sort_ctx.update_tokens(&tokens);
+
+                                        tokens
                                     })
                                 });
 
                                 let filtered_count = Signal::derive(move || filtered_tokens.get().len());
+
+                                let hide_rarity = collection.with_value(|c| c.hide_rarity);
 
                                 view! {
                                     <GalleryHeader
@@ -230,6 +338,8 @@ pub fn GalleryPage() -> impl IntoView {
                                         filtered_count=filtered_count
                                         trait_options=trait_options
                                         loading=false
+                                        hide_rarity=hide_rarity
+                                        sort_ctx=sort_ctx
                                     />
                                     <div class="gallery-content">
                                         <InfiniteGrid
@@ -269,6 +379,8 @@ fn GalleryHeader(
     #[prop(into)] filtered_count: Signal<usize>,
     trait_options: Vec<TraitValueOption>,
     loading: bool,
+    #[prop(optional)] hide_rarity: bool,
+    #[prop(optional)] sort_ctx: Option<SortContext>,
 ) -> impl IntoView {
     let filter_ctx = use_context::<FilterContext>();
 
@@ -370,6 +482,26 @@ fn GalleryHeader(
                                     }
                                 }}
                             </span>
+                            // Sort dropdown (only show if rarity is available)
+                            {(!hide_rarity && sort_ctx.is_some()).then(|| {
+                                let ctx = sort_ctx.unwrap();
+                                view! {
+                                    <select
+                                        class="sort-select"
+                                        on:change=move |ev| {
+                                            let value = event_target_value(&ev);
+                                            let order = match value.as_str() {
+                                                "rank" => SortOrder::Rank,
+                                                _ => SortOrder::Default,
+                                            };
+                                            ctx.set(order);
+                                        }
+                                    >
+                                        <option value="default" selected=move || ctx.get() == SortOrder::Default>"Default"</option>
+                                        <option value="rank" selected=move || ctx.get() == SortOrder::Rank>"Rank"</option>
+                                    </select>
+                                }
+                            })}
                         }.into_any()
                     }}
                 </div>

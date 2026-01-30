@@ -1,4 +1,5 @@
 use crate::{CollectionCache, HcfInfo, TokenInfo, TraitInfo, collection_url, fetch_collection, fetch_hcf_image_with_signal};
+use super::SortContext;
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
@@ -84,6 +85,7 @@ fn clear_abort_controller() {
 pub fn DetailPage() -> impl IntoView {
     let params = use_params_map();
     let cache = expect_context::<CollectionCache>();
+    let sort_ctx = use_context::<SortContext>();
 
     let slug = move || params.read().get("slug").unwrap_or_default();
     let id = move || params.read().get("id").unwrap_or_default();
@@ -121,73 +123,59 @@ pub fn DetailPage() -> impl IntoView {
             </div>
         }>
             {move || Suspend::new({
-                let collection_resource = collection_resource.clone();
-                async move {
-                    match collection_resource.await {
-                        Ok(collection) => {
-                            let s = slug();
-                            let current_id = id();
+                    let collection_resource = collection_resource.clone();
+                    async move {
+                        match collection_resource.await {
+                            Ok(collection) => {
+                                let s = slug();
+                                let current_id = id();
 
-                            // Find the token by asset_id
-                            let token_index = collection.tokens.iter()
-                                .position(|t| t.asset_id == current_id);
+                                // Find the token by asset_id
+                                let token = collection.tokens.iter()
+                                    .find(|t| t.asset_id == current_id)
+                                    .cloned();
 
-                            match token_index {
-                                Some(idx) => {
-                                    let token = collection.tokens[idx].clone();
-                                    let total = collection.tokens.len();
+                                match token {
+                                    Some(token) => {
+                                        let total = collection.tokens.len();
 
-                                    let prev_token = if idx > 0 {
-                                        Some(collection.tokens[idx - 1].clone())
-                                    } else {
-                                        None
-                                    };
-
-                                    let next_token = if idx < total - 1 {
-                                        Some(collection.tokens[idx + 1].clone())
-                                    } else {
-                                        None
-                                    };
-
-                                    view! {
-                                        <TokenDetail
-                                            token=token
-                                            slug=s
-                                            current_index=idx
-                                            total_count=total
-                                            prev_token=prev_token
-                                            next_token=next_token
-                                            traits=collection.traits.clone()
-                                            hcf=collection.hcf.clone()
-                                            hide_rarity=collection.hide_rarity
-                                        />
-                                    }.into_any()
-                                }
-                                None => view! {
-                                    <div class="tweakpane-view">
-                                        <div class="image-viewport">
-                                            <div class="error-message">
-                                                <h2>"Token Not Found"</h2>
-                                                <p>{format!("No token with ID '{}' found", current_id)}</p>
+                                        view! {
+                                            <TokenDetail
+                                                token=token
+                                                slug=s
+                                                total_count=total
+                                                sort_ctx=sort_ctx
+                                                traits=collection.traits.clone()
+                                                hcf=collection.hcf.clone()
+                                                hide_rarity=collection.hide_rarity
+                                            />
+                                        }.into_any()
+                                    }
+                                    None => view! {
+                                        <div class="tweakpane-view">
+                                            <div class="image-viewport">
+                                                <div class="error-message">
+                                                    <h2>"Token Not Found"</h2>
+                                                    <p>{format!("No token with ID '{}' found", current_id)}</p>
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                }.into_any()
+                                    }.into_any()
+                                }
                             }
-                        }
-                        Err(e) => view! {
-                            <div class="tweakpane-view">
-                                <div class="image-viewport">
-                                    <div class="error-message">
-                                        <h2>"Error Loading Collection"</h2>
-                                        <p>{e}</p>
+                            Err(e) => view! {
+                                <div class="tweakpane-view">
+                                    <div class="image-viewport">
+                                        <div class="error-message">
+                                            <h2>"Error Loading Collection"</h2>
+                                            <p>{e}</p>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
-                        }.into_any(),
+                            }.into_any(),
+                        }
                     }
-                }
-            })}
+                })}
         </Suspense>
     }
 }
@@ -269,21 +257,24 @@ fn decode_token_traits(token: &TokenInfo, traits: &[TraitInfo], total_tokens: u3
 fn TokenDetail(
     token: TokenInfo,
     slug: String,
-    current_index: usize,
     total_count: usize,
-    prev_token: Option<TokenInfo>,
-    next_token: Option<TokenInfo>,
+    sort_ctx: Option<SortContext>,
     traits: Vec<TraitInfo>,
     hcf: Option<HcfInfo>,
     hide_rarity: bool,
 ) -> impl IntoView {
     let back_url = format!("/{slug}#token-{}", token.index);
-    let prev_url = prev_token
-        .as_ref()
-        .map(|t| format!("/{slug}/{}", t.asset_id));
-    let next_url = next_token
-        .as_ref()
-        .map(|t| format!("/{slug}/{}", t.asset_id));
+
+    // Get prev/next from sort context, or fall back to no navigation
+    let current_id = token.asset_id.clone();
+    let (prev_url, next_url, current_index) = if let Some(ctx) = &sort_ctx {
+        let prev = ctx.prev_id(&current_id).map(|id| format!("/{slug}/{id}"));
+        let next = ctx.next_id(&current_id).map(|id| format!("/{slug}/{id}"));
+        let pos = ctx.position(&current_id).map(|(p, _)| p).unwrap_or(0);
+        (prev, next, pos)
+    } else {
+        (None, None, token.index as usize)
+    };
 
     let has_prev = prev_url.is_some();
     let has_next = next_url.is_some();
