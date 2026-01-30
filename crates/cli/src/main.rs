@@ -271,8 +271,9 @@ async fn cmd_sync_cardano(
     };
     use viewer_ingest::{
         AssetSource, CnftToolsSource, CollectionWriter, HcfBundleResult, HcfBundler, HcfConfig,
-        PinataClient, Pipeline, PipelineConfig, SpriteConfig, SpriteGenerator, TraitAnalysis,
-        fetch_images, fetch_images_iiif, fetch_thumbnails_pinata,
+        NftcdnClient, PinataClient, Pipeline, PipelineConfig, SpriteConfig, SpriteGenerator,
+        TraitAnalysis, fetch_images, fetch_images_iiif, fetch_images_nftcdn,
+        fetch_thumbnails_pinata,
     };
 
     println!("Syncing Cardano collection: {}", policy_id);
@@ -555,7 +556,18 @@ async fn cmd_sync_cardano(
                 },
             );
 
-            let result = if config.images.is_iiif() {
+            let result = if config.images.is_nftcdn() {
+                println!("\n[4/6] Fetching images from NFTCDN...");
+                let nftcdn = NftcdnClient::from_env()?;
+                fetch_images_nftcdn(
+                    &mut pipeline,
+                    &assets,
+                    policy_id,
+                    &nftcdn,
+                    Some(progress_cb),
+                )
+                .await?
+            } else if config.images.is_iiif() {
                 println!("\n[4/6] Fetching images from IIIF...");
                 fetch_images_iiif(
                     &mut pipeline,

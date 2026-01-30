@@ -2,7 +2,9 @@
 
 use crate::NormalizedAsset;
 use crate::ipfs::{FetchError, Gateway, IpfsFetcher};
+use crate::nftcdn::NftcdnClient;
 use crate::pipeline::Pipeline;
+use cardano_assets::AssetId;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Semaphore;
@@ -598,6 +600,235 @@ fn extract_cid(url: &str) -> Option<&str> {
     // Bare CID
     if url.starts_with("Qm") || url.starts_with("bafy") {
         return Some(url.split('/').next().unwrap_or(url));
+    }
+
+    None
+}
+
+/// Fetch all images for a collection from NFTCDN.
+///
+/// - Downloads to the `raw/` directory in original format
+/// - Skips images that already exist
+/// - Uses CIP-14 asset fingerprints for URL construction
+/// - Calls progress callback for CLI output
+pub async fn fetch_images_nftcdn(
+    pipeline: &mut Pipeline,
+    assets: &[NormalizedAsset],
+    policy_id: &str,
+    nftcdn: &NftcdnClient,
+    on_progress: Option<ProgressCallback>,
+) -> Result<FetchResult, crate::nftcdn::NftcdnError> {
+    let fetched = Arc::new(AtomicUsize::new(0));
+    let skipped = Arc::new(AtomicUsize::new(0));
+    let failed_count = Arc::new(AtomicUsize::new(0));
+    let failed_ids: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let last_reported = Arc::new(AtomicUsize::new(0));
+
+    let total = assets.len();
+    debug!("Starting NFTCDN fetch of {} images", total);
+
+    // Progress reporting interval
+    const PROGRESS_INTERVAL: usize = 50;
+
+    // Process in batches for state saving
+    let batch_size = 100;
+    let semaphore = Arc::new(Semaphore::new(pipeline.config.fetch_concurrency));
+
+    // Wrap callback in Arc for sharing across tasks
+    let on_progress = on_progress.map(Arc::new);
+
+    for (batch_idx, batch) in assets.chunks(batch_size).enumerate() {
+        let mut handles = Vec::with_capacity(batch.len());
+
+        for asset in batch {
+            // Skip if already fetched (check for any common extension)
+            let exists = ["png", "jpg", "jpeg", "webp", "gif"].iter().any(|ext| {
+                pipeline
+                    .dirs
+                    .raw
+                    .join(format!("{}.{}", asset.encoded_name, ext))
+                    .exists()
+            });
+            if exists {
+                skipped.fetch_add(1, Ordering::Relaxed);
+
+                // Check if we should report progress after skip
+                if let Some(ref callback) = on_progress {
+                    let current_fetched = fetched.load(Ordering::Relaxed);
+                    let current_skipped = skipped.load(Ordering::Relaxed);
+                    let current_failed = failed_count.load(Ordering::Relaxed);
+                    let processed = current_fetched + current_skipped + current_failed;
+                    let last = last_reported.load(Ordering::Relaxed);
+
+                    if processed >= last + PROGRESS_INTERVAL || processed == total {
+                        last_reported.store(processed, Ordering::Relaxed);
+                        callback(processed, total, current_fetched, current_failed);
+                    }
+                }
+                continue;
+            }
+
+            // Build AssetId from policy_id and encoded asset name (which is hex)
+            let asset_id = match AssetId::new(policy_id.to_string(), asset.encoded_name.clone()) {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!(
+                        encoded_name = %asset.encoded_name,
+                        error = %e,
+                        "Failed to create AssetId"
+                    );
+                    failed_count.fetch_add(1, Ordering::Relaxed);
+                    failed_ids.lock().unwrap().push(asset.encoded_name.clone());
+                    continue;
+                }
+            };
+
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let nftcdn = nftcdn.clone();
+            let encoded_name = asset.encoded_name.clone();
+            let raw_dir = pipeline.dirs.raw.clone();
+            let fetched = fetched.clone();
+            let failed_count = failed_count.clone();
+            let failed_ids = failed_ids.clone();
+            let skipped = skipped.clone();
+            let last_reported = last_reported.clone();
+            let on_progress = on_progress.clone();
+
+            handles.push(tokio::spawn(async move {
+                let _permit = permit;
+
+                match nftcdn.fetch_image(&asset_id).await {
+                    Ok(bytes) => {
+                        // Detect format from magic bytes
+                        let ext = detect_image_format(&bytes).unwrap_or("bin");
+                        let output_path = raw_dir.join(format!("{}.{}", encoded_name, ext));
+
+                        if let Err(e) = std::fs::write(&output_path, &bytes) {
+                            warn!(
+                                path = %output_path.display(),
+                                error = %e,
+                                "Failed to write image"
+                            );
+                            failed_count.fetch_add(1, Ordering::Relaxed);
+                            failed_ids.lock().unwrap().push(encoded_name.clone());
+                        } else {
+                            trace!(
+                                path = %output_path.display(),
+                                bytes = bytes.len(),
+                                format = %ext,
+                                "Saved NFTCDN image"
+                            );
+                            fetched.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            encoded_name = %encoded_name,
+                            error = %e,
+                            "NFTCDN fetch failed"
+                        );
+                        failed_count.fetch_add(1, Ordering::Relaxed);
+                        failed_ids.lock().unwrap().push(encoded_name.clone());
+                    }
+                }
+
+                // Check if we should report progress
+                if let Some(ref callback) = on_progress {
+                    let current_fetched = fetched.load(Ordering::Relaxed);
+                    let current_skipped = skipped.load(Ordering::Relaxed);
+                    let current_failed = failed_count.load(Ordering::Relaxed);
+                    let processed = current_fetched + current_skipped + current_failed;
+                    let last = last_reported.load(Ordering::Relaxed);
+
+                    if processed >= last + PROGRESS_INTERVAL || processed == total {
+                        // Use compare_exchange to avoid duplicate reports
+                        if last_reported
+                            .compare_exchange(last, processed, Ordering::SeqCst, Ordering::Relaxed)
+                            .is_ok()
+                        {
+                            callback(processed, total, current_fetched, current_failed);
+                        }
+                    }
+                }
+            }));
+        }
+
+        // Wait for batch to complete
+        for handle in handles {
+            let _ = handle.await;
+        }
+
+        // Update pipeline state
+        let current_fetched = fetched.load(Ordering::Relaxed);
+        let current_skipped = skipped.load(Ordering::Relaxed);
+        let current_failed = failed_count.load(Ordering::Relaxed);
+
+        pipeline.state.images_fetched = current_fetched + current_skipped;
+        pipeline.state.images_failed = current_failed;
+
+        // Save state periodically
+        if (batch_idx + 1) % 10 == 0 {
+            pipeline.save_state().ok();
+        }
+    }
+
+    // Final progress report if we haven't reported the final count
+    let current_fetched = fetched.load(Ordering::Relaxed);
+    let current_skipped = skipped.load(Ordering::Relaxed);
+    let current_failed = failed_count.load(Ordering::Relaxed);
+    let processed = current_fetched + current_skipped + current_failed;
+
+    if let Some(ref callback) = on_progress {
+        let last = last_reported.load(Ordering::Relaxed);
+        if processed > last {
+            callback(processed, total, current_fetched, current_failed);
+        }
+    }
+
+    // Final state save
+    pipeline.save_state().ok();
+
+    let failed = Arc::try_unwrap(failed_ids).unwrap().into_inner().unwrap();
+
+    debug!(
+        fetched = current_fetched,
+        skipped = current_skipped,
+        failed = failed.len(),
+        "NFTCDN fetch complete"
+    );
+
+    Ok(FetchResult {
+        fetched: current_fetched,
+        skipped: current_skipped,
+        failed,
+    })
+}
+
+/// Detect image format from magic bytes.
+fn detect_image_format(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() < 4 {
+        return None;
+    }
+
+    // PNG: 89 50 4E 47
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        return Some("png");
+    }
+
+    // JPEG: FF D8 FF
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("jpg");
+    }
+
+    // WebP: RIFF....WEBP
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("webp");
+    }
+
+    // GIF: GIF87a or GIF89a
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("gif");
     }
 
     None

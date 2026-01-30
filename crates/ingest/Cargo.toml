@@ -10,6 +10,7 @@ repository.workspace = true
 viewer-format = { workspace = true }
 viewer-binary = { workspace = true }
 cnft_tools = { workspace = true }
+cardano-assets = { workspace = true, features = ["cip14"] }
 
 tokio = { workspace = true }
 reqwest = { workspace = true }
@@ -31,6 +32,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 rayon = "1.10"
 num_cpus = "1.16"
 webp = "0.3"
+
+# NFTCDN HMAC authentication
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

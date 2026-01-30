@@ -12,6 +12,7 @@ pub mod analyze;
 pub mod bundle;
 pub mod fetch;
 pub mod ipfs;
+pub mod nftcdn;
 pub mod normalize;
 pub mod pinata;
 pub mod pipeline;
@@ -21,8 +22,11 @@ pub mod writer;
 
 pub use analyze::TraitAnalysis;
 pub use bundle::{HcfBundleResult, HcfBundler, HcfConfig, HcfError, ImageLocation, ShardInfo};
-pub use fetch::{FetchResult, fetch_images, fetch_images_iiif, fetch_thumbnails_pinata};
+pub use fetch::{
+    FetchResult, fetch_images, fetch_images_iiif, fetch_images_nftcdn, fetch_thumbnails_pinata,
+};
 pub use ipfs::{IpfsFetcher, extract_cid};
+pub use nftcdn::{NftcdnClient, NftcdnError};
 pub use normalize::{
     BatchNormalizer, NormalizeConfig, NormalizeError, NormalizeResult, normalize_image,
 };

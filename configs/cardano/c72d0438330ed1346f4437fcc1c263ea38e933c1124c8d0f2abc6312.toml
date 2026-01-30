@@ -1,13 +1,14 @@
 slug = "kwic"
 name = "KWIC"
 
-[pinata]
-enabled = true
-group_id = "6c9bfcb0-6ca6-4d5c-83d9-dd0315aa2416"
+# [pinata]
+# enabled = true
+# group_id = "6c9bfcb0-6ca6-4d5c-83d9-dd0315aa2416"
 
 [images]
-source = "ipfs"
-gateways = ["dweb", "pinata"]
+# source = "ipfs"
+# gateways = ["dweb", "pinata"]
+source = "nftcdn"
 
 [traits]
 ignore = []
