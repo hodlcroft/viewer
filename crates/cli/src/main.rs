@@ -56,6 +56,20 @@ enum PinataAction {
 
     /// Show status of pending pin requests
     QueueStatus,
+
+    /// Sync validated raw images to Pinata for a collection
+    Sync {
+        /// Policy ID of the collection
+        policy_id: String,
+
+        /// Path to config file (default: configs/cardano/{policy_id}.toml)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Show what would be uploaded without uploading
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -150,6 +164,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Pinata { action } => match action {
             PinataAction::PurgeQueue => cmd_pinata_purge_queue().await,
             PinataAction::QueueStatus => cmd_pinata_queue_status().await,
+            PinataAction::Sync { policy_id, config, dry_run } => {
+                cmd_pinata_sync(&policy_id, config, dry_run).await
+            }
         },
         Commands::Cid { action } => match action {
             CidAction::Check {
@@ -1067,7 +1084,255 @@ async fn cmd_pinata_queue_status() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Show info about an existing bundle.
+
+/// Upload files to Pinata with progress reporting.
+
+/// Sync validated raw images to Pinata for a collection.
+///
+/// This command:
+/// 1. Loads config from configs/cardano/{policy_id}.toml
+/// 2. Fetches collection metadata from CNFT.tools
+/// 3. Validates local raw files against on-chain CIDs
+/// 4. Uploads only valid files to Pinata
+async fn cmd_pinata_sync(
+    policy_id: &str,
+    config_path: Option<PathBuf>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    use indicatif::{ProgressBar, ProgressStyle};
+    use viewer_ingest::{
+        extract_cid, find_matching_cid, AssetSource, CnftToolsSource, PinataClient,
+    };
+
+    // Load config
+    let config = load_cardano_config(policy_id, config_path.clone())?;
+
+    // Check Pinata is configured
+    if !config.pinata.is_enabled() {
+        anyhow::bail!(
+            "Pinata is not enabled in config. Add [pinata] section with enabled = true"
+        );
+    }
+    let group_id = config
+        .pinata
+        .group_id
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Pinata group_id not configured"))?;
+
+    // Determine raw directory
+    let raw_dir = PathBuf::from(format!(".build/{}/raw", policy_id));
+    if !raw_dir.exists() {
+        anyhow::bail!(
+            "Raw directory not found: {}\nRun 'viewer sync cardano {}' first to fetch images.",
+            raw_dir.display(),
+            policy_id
+        );
+    }
+
+    println!("Pinata sync for: {}", policy_id);
+    println!("  Config: {}", config_path.map(|p| p.display().to_string()).unwrap_or_else(|| format!("configs/cardano/{}.toml", policy_id)));
+    println!("  Raw dir: {}", raw_dir.display());
+    println!("  Group ID: {}", group_id);
+    println!();
+
+    // Fetch collection metadata
+    println!("Fetching collection metadata...");
+    let source = CnftToolsSource::new();
+    let assets = source.fetch_collection(policy_id).await?;
+    println!("  Found {} assets", assets.len());
+
+    // Build list of assets with CIDs
+    let mut assets_with_cids: Vec<(String, String, String)> = Vec::new(); // (encoded_name, display_name, cid)
+    for asset in &assets {
+        if let Some(ref image_url) = asset.image_url {
+            if let Some(cid) = extract_cid(image_url) {
+                assets_with_cids.push((
+                    asset.encoded_name.clone(),
+                    asset.display_name.clone(),
+                    cid,
+                ));
+            }
+        }
+    }
+    println!("  Assets with CIDs: {}", assets_with_cids.len());
+    println!();
+
+    // Validate CIDs and collect files to upload
+    println!("Validating local files against on-chain CIDs...");
+    
+    let pb = ProgressBar::new(assets_with_cids.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let mut valid_files: Vec<(PathBuf, String, String)> = Vec::new(); // (path, display_name, cid)
+    let mut invalid_cids: Vec<(String, String, String)> = Vec::new(); // (name, expected, got)
+    let mut missing_files: Vec<String> = Vec::new();
+
+    for (encoded_name, display_name, target_cid) in &assets_with_cids {
+        pb.inc(1);
+        pb.set_message(format!("{}", display_name));
+
+        // Try to find local file with various extensions
+        let possible_paths: Vec<PathBuf> = ["png", "jpg", "jpeg", "webp", "gif"]
+            .iter()
+            .map(|ext| raw_dir.join(format!("{}.{}", encoded_name, ext)))
+            .collect();
+
+        let local_file = possible_paths.iter().find(|p| p.exists());
+
+        match local_file {
+            Some(path) => {
+                let data = std::fs::read(path)?;
+                if find_matching_cid(&data, target_cid).is_some() {
+                    valid_files.push((path.clone(), display_name.clone(), target_cid.clone()));
+                } else {
+                    let computed = viewer_ingest::compute_cid_bytes(&data);
+                    invalid_cids.push((
+                        display_name.clone(),
+                        target_cid.clone(),
+                        computed.cid_v1,
+                    ));
+                }
+            }
+            None => {
+                missing_files.push(display_name.clone());
+            }
+        }
+    }
+
+    pb.finish_and_clear();
+
+    // Report validation results
+    println!("Validation complete:");
+    println!("  Valid:   {}", valid_files.len());
+    if !invalid_cids.is_empty() {
+        println!("  Invalid: {}", invalid_cids.len());
+    }
+    if !missing_files.is_empty() {
+        println!("  Missing: {}", missing_files.len());
+    }
+
+    // Show invalid CIDs
+    if !invalid_cids.is_empty() {
+        println!();
+        println!("Invalid CIDs (file content doesn't match on-chain CID):");
+        for (name, expected, got) in invalid_cids.iter().take(10) {
+            println!("  {} expected: {} got: {}", name, expected, got);
+        }
+        if invalid_cids.len() > 10 {
+            println!("  ... and {} more", invalid_cids.len() - 10);
+        }
+    }
+
+    // Show missing files
+    if !missing_files.is_empty() {
+        println!();
+        println!("Missing files (not found in raw directory):");
+        for name in missing_files.iter().take(10) {
+            println!("  {}", name);
+        }
+        if missing_files.len() > 10 {
+            println!("  ... and {} more", missing_files.len() - 10);
+        }
+    }
+
+    if valid_files.is_empty() {
+        println!();
+        println!("No valid files to upload.");
+        return Ok(());
+    }
+
+    println!();
+
+    if dry_run {
+        println!("DRY RUN - would upload {} files to Pinata group {}", valid_files.len(), group_id);
+        for (path, name, cid) in valid_files.iter().take(10) {
+            println!("  {} -> {} ({})", name, cid, path.display());
+        }
+        if valid_files.len() > 10 {
+            println!("  ... and {} more", valid_files.len() - 10);
+        }
+        return Ok(());
+    }
+
+    // Connect to Pinata
+    println!("Connecting to Pinata...");
+    let pinata = PinataClient::from_env()?;
+
+    // Verify group exists
+    let group = pinata.find_group_by_id(group_id).await?;
+    if group.is_none() {
+        anyhow::bail!("Pinata group not found: {}", group_id);
+    }
+    println!("  Using group: {}", group_id);
+    println!();
+
+    // Upload with progress
+    println!("Uploading {} validated files...", valid_files.len());
+
+    let pb = ProgressBar::new(valid_files.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let mut uploaded = 0usize;
+    let mut duplicates = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+
+    for (path, name, _cid) in &valid_files {
+        pb.set_message(format!("{}", name));
+
+        match pinata.upload_file(path, Some(name), Some(group_id)).await {
+            Ok(result) => {
+                if result.is_duplicate {
+                    duplicates += 1;
+                } else {
+                    uploaded += 1;
+                }
+            }
+            Err(e) => {
+                failed.push(format!("{}: {}", name, e));
+            }
+        }
+
+        pb.inc(1);
+        pb.set_message(format!("new: {} dup: {} fail: {}", uploaded, duplicates, failed.len()));
+    }
+
+    pb.finish_with_message(format!(
+        "done - new: {} dup: {} fail: {}",
+        uploaded, duplicates, failed.len()
+    ));
+
+    // Summary
+    println!();
+    println!("Upload complete:");
+    println!("  Uploaded: {}", uploaded);
+    println!("  Duplicates: {}", duplicates);
+    println!("  Failed: {}", failed.len());
+
+    if !failed.is_empty() {
+        println!();
+        println!("Failed uploads:");
+        for err in failed.iter().take(10) {
+            println!("  {}", err);
+        }
+        if failed.len() > 10 {
+            println!("  ... and {} more", failed.len() - 10);
+        }
+    }
+
+    Ok(())
+}
+
+
 fn cmd_info(path: &PathBuf) -> anyhow::Result<()> {
     let index_path = path.join("index.json");
 

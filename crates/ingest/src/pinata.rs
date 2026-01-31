@@ -3,8 +3,9 @@
 //! Provides group management and CID pinning functionality for collections
 //! that want guaranteed availability via Pinata's infrastructure.
 
-use reqwest::Client;
+use reqwest::{multipart, Client};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -152,6 +153,24 @@ struct PinByCidRequest {
     group_id: Option<String>,
 }
 
+/// Response from file upload.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UploadedFile {
+    pub id: String,
+    pub name: String,
+    pub cid: String,
+    pub size: u64,
+    pub mime_type: String,
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub is_duplicate: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct UploadResponse {
+    data: UploadedFile,
+}
+
 impl PinataClient {
     /// Create a new Pinata client from environment variables.
     ///
@@ -292,6 +311,12 @@ impl PinataClient {
     pub async fn find_group(&self, name: &str) -> Result<Option<Group>, PinataError> {
         let groups = self.list_groups(Some(name)).await?;
         Ok(groups.into_iter().find(|g| g.name == name))
+    }
+
+    /// Find a group by ID.
+    pub async fn find_group_by_id(&self, id: &str) -> Result<Option<Group>, PinataError> {
+        let groups = self.list_groups(None).await?;
+        Ok(groups.into_iter().find(|g| g.id == id))
     }
 
     /// Create a new group.
@@ -462,8 +487,144 @@ impl PinataClient {
         }
 
         Ok(())
+
+    }
+    /// Upload a file to Pinata.
+    ///
+    /// The file is uploaded directly to Pinata's storage (not pin-by-CID).
+    /// This is useful for uploading new content that doesn't exist on IPFS yet.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the file to upload
+    /// * `name` - Optional name for the file (defaults to filename)
+    /// * `group_id` - Optional group ID to add the file to
+    ///
+    /// # Returns
+    /// The uploaded file information including its CID.
+    pub async fn upload_file(
+        &self,
+        path: &Path,
+        name: Option<&str>,
+        group_id: Option<&str>,
+    ) -> Result<UploadedFile, PinataError> {
+        const UPLOAD_BASE: &str = "https://uploads.pinata.cloud/v3";
+
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file");
+        let display_name = name.unwrap_or(file_name);
+
+        debug!("Uploading file {} as '{}' to group {:?}", path.display(), display_name, group_id);
+
+        // Read file contents
+        let file_bytes = tokio::fs::read(path).await.map_err(|e| {
+            PinataError::InvalidResponse(format!("Failed to read file {}: {}", path.display(), e))
+        })?;
+
+        // Detect MIME type from extension
+        let mime_type = match path.extension().and_then(|e| e.to_str()) {
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("svg") => "image/svg+xml",
+            Some("json") => "application/json",
+            _ => "application/octet-stream",
+        };
+
+        // Build multipart form
+        let file_part = multipart::Part::bytes(file_bytes)
+            .file_name(file_name.to_string())
+            .mime_str(mime_type)
+            .map_err(|e| PinataError::InvalidResponse(format!("Invalid MIME type: {}", e)))?;
+
+        let mut form = multipart::Form::new()
+            .part("file", file_part)
+            .text("name", display_name.to_string())
+            .text("network", "public");
+
+        if let Some(gid) = group_id {
+            form = form.text("group_id", gid.to_string());
+        }
+
+        let url = format!("{}/files", UPLOAD_BASE);
+
+        // Note: multipart requests cannot use send_with_retry easily,
+        // so we handle rate limiting manually
+        tokio::time::sleep(API_RATE_LIMIT_DELAY).await;
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.jwt)
+            .multipart(form)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let message = response.text().await.unwrap_or_default();
+            return Err(PinataError::Api { status, message });
+        }
+
+        let result: UploadResponse = response.json().await?;
+        
+        if result.data.is_duplicate {
+            debug!("File already exists with CID {}", result.data.cid);
+        } else {
+            info!("Uploaded {} -> CID {}", display_name, result.data.cid);
+        }
+
+        Ok(result.data)
     }
 
+    /// Upload multiple files to Pinata with progress reporting.
+    ///
+    /// # Arguments
+    /// * `files` - Slice of (path, name) pairs to upload
+    /// * `group_id` - Optional group ID to add files to
+    /// * `on_progress` - Optional callback called with (completed, total, uploaded, duplicates, failed)
+    ///
+    /// # Returns
+    /// Vector of results for each file (Ok with UploadedFile or Err with error message).
+    pub async fn upload_files(
+        &self,
+        files: &[(std::path::PathBuf, String)],
+        group_id: Option<&str>,
+        on_progress: Option<Box<dyn Fn(usize, usize, usize, usize, usize) + Send + Sync>>,
+    ) -> Vec<Result<UploadedFile, String>> {
+        let total = files.len();
+        let mut results = Vec::with_capacity(total);
+        let mut uploaded = 0usize;
+        let mut duplicates = 0usize;
+        let mut failed = 0usize;
+
+        for (i, (path, name)) in files.iter().enumerate() {
+            let result = self.upload_file(path, Some(name), group_id).await;
+
+            match &result {
+                Ok(uploaded_file) => {
+                    if uploaded_file.is_duplicate {
+                        duplicates += 1;
+                    } else {
+                        uploaded += 1;
+                    }
+                    results.push(Ok(uploaded_file.clone()));
+                }
+                Err(e) => {
+                    failed += 1;
+                    results.push(Err(format!("{}: {}", path.display(), e)));
+                }
+            }
+
+            if let Some(ref callback) = on_progress {
+                callback(i + 1, total, uploaded, duplicates, failed);
+            }
+        }
+
+        results
+    }
     /// Ensure all CIDs are pinned to a group.
     ///
     /// Takes a slice of (name, cid) pairs. The name is used for display in Pinata's UI.

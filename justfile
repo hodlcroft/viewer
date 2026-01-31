@@ -74,3 +74,21 @@ cid-match path target:
 # Show info about a CID
 cid-info cid:
     cargo run --package viewer-cli -- cid info {{ cid }}
+
+# Pinata commands
+
+# Sync validated raw files to Pinata for a collection
+pinata-sync policy_id:
+    cargo run --release --package viewer-cli -- pinata sync {{ policy_id }}
+
+# Sync to Pinata (dry run)
+pinata-sync-dry policy_id:
+    cargo run --release --package viewer-cli -- pinata sync {{ policy_id }} --dry-run
+
+# Show Pinata pin queue status
+pinata-queue-status:
+    cargo run --release --package viewer-cli -- pinata queue-status
+
+# Purge Pinata pin queue
+pinata-purge-queue:
+    cargo run --release --package viewer-cli -- pinata purge-queue
