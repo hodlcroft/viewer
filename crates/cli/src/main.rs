@@ -1230,17 +1230,32 @@ async fn cmd_cid_check(policy_id: &str, local_dir: Option<PathBuf>) -> anyhow::R
 
     // If local directory provided, try to match files
     if let Some(dir) = local_dir {
-        println!("\nComparing with local files in: {}", dir.display());
+        use indicatif::{ProgressBar, ProgressStyle};
 
         if !dir.exists() {
             anyhow::bail!("Directory does not exist: {}", dir.display());
         }
 
+        let total = assets_with_cids.len() as u64;
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+                )
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+        pb.set_message("Validating CIDs...");
+
         let mut matched = 0;
         let mut unmatched = 0;
         let mut missing = 0;
+        let mut invalid_assets: Vec<(String, String, String, String)> = Vec::new();
 
         for (encoded_name, display_name, target_cid, _info) in &assets_with_cids {
+            pb.inc(1);
+
             // Try to find matching local file
             let possible_paths: Vec<PathBuf> = ["png", "jpg", "jpeg", "webp", "gif"]
                 .iter()
@@ -1258,27 +1273,17 @@ async fn cmd_cid_check(policy_id: &str, local_dir: Option<PathBuf>) -> anyhow::R
                 Some(path) => {
                     // Try to compute matching CID
                     let data = std::fs::read(path)?;
-                    if let Some((computed, strategy)) =
-                        viewer_ingest::find_matching_cid(&data, target_cid)
-                    {
-                        println!("  ✓ {} - matched using {}", display_name, strategy);
-                        println!("    Local: {}", path.display());
-                        println!("    CID: {}", computed.cid_v1);
+                    if viewer_ingest::find_matching_cid(&data, target_cid).is_some() {
                         matched += 1;
                     } else {
-                        // Show what CIDs we computed
-                        let raw = viewer_ingest::compute_cid_bytes(&data);
-                        let legacy = viewer_ingest::cid_compute::compute_cid_bytes_with_settings(
-                            &data,
-                            &viewer_ingest::CidSettings::legacy(),
-                        );
-                        println!("  ✗ {} - no match", display_name);
-                        println!("    Local: {}", path.display());
-                        println!("    Target:  {}", target_cid);
-                        println!("    Raw:     {}", raw.cid_v1);
-                        if let Some(v0) = &legacy.cid_v0 {
-                            println!("    Legacy:  {} / {}", legacy.cid_v1, v0);
-                        }
+                        // Record mismatch for reporting after progress bar completes
+                        let computed = viewer_ingest::compute_cid_bytes(&data);
+                        invalid_assets.push((
+                            encoded_name.clone(),
+                            target_cid.clone(),
+                            computed.cid_v1,
+                            path.display().to_string(),
+                        ));
                         unmatched += 1;
                     }
                 }
@@ -1288,10 +1293,32 @@ async fn cmd_cid_check(policy_id: &str, local_dir: Option<PathBuf>) -> anyhow::R
             }
         }
 
-        println!("\nSummary:");
-        println!("  Matched: {}", matched);
-        println!("  Unmatched: {}", unmatched);
-        println!("  Missing local files: {}", missing);
+        pb.finish_and_clear();
+
+        // Report invalid CIDs after progress bar
+        if !invalid_assets.is_empty() {
+            println!("\nInvalid CIDs detected:");
+            for (asset_id, expected, computed, path) in &invalid_assets {
+                println!("  ✗ {}", asset_id);
+                println!("    File:     {}", path);
+                println!("    Expected: {}", expected);
+                println!("    Got:      {}", computed);
+            }
+        }
+
+        // Summary
+        println!("\nValidation complete:");
+        println!("  ✓ Valid:   {}", matched);
+        if unmatched > 0 {
+            println!("  ✗ Invalid: {}", unmatched);
+        }
+        if missing > 0 {
+            println!("  ? Missing: {}", missing);
+        }
+
+        if unmatched > 0 {
+            anyhow::bail!("{} assets have invalid CIDs", unmatched);
+        }
     }
 
     Ok(())
@@ -1299,7 +1326,7 @@ async fn cmd_cid_check(policy_id: &str, local_dir: Option<PathBuf>) -> anyhow::R
 
 /// Compute CID for a local file.
 fn cmd_cid_compute(path: &PathBuf, target: Option<String>) -> anyhow::Result<()> {
-    use viewer_ingest::{CidSettings, compute_cid, find_matching_cid};
+    use viewer_ingest::{compute_cid, find_matching_cid};
 
     if !path.exists() {
         anyhow::bail!("File does not exist: {}", path.display());
@@ -1318,51 +1345,29 @@ fn cmd_cid_compute(path: &PathBuf, target: Option<String>) -> anyhow::Result<()>
     if let Some(ref target_cid) = target {
         println!("\nTrying to match target CID: {}", target_cid);
 
-        if let Some((computed, strategy)) = find_matching_cid(&data, target_cid) {
-            println!("  ✓ Match found using: {}", strategy);
+        if let Some(computed) = find_matching_cid(&data, target_cid) {
+            println!("  ✓ Match found!");
             println!("  CIDv1: {}", computed.cid_v1);
             if let Some(v0) = &computed.cid_v0 {
                 println!("  CIDv0: {}", v0);
             }
-            println!("  Chunks: {}", computed.chunk_count);
-            println!("  Raw codec: {}", computed.is_raw);
         } else {
-            println!("  ✗ No matching configuration found");
-            println!("\n  Computed CIDs with different settings:");
+            println!("  ✗ No match");
 
-            // Show all computed variants
-            let raw = viewer_ingest::compute_cid_bytes(&data);
-            println!("    raw-leaves: {}", raw.cid_v1);
-
-            let legacy = viewer_ingest::cid_compute::compute_cid_bytes_with_settings(
-                &data,
-                &CidSettings::legacy(),
-            );
-            println!("    legacy:     {}", legacy.cid_v1);
-            if let Some(v0) = &legacy.cid_v0 {
-                println!("    legacy v0:  {}", v0);
+            let computed = viewer_ingest::compute_cid_bytes(&data);
+            println!("\n  Computed CID:");
+            println!("    CIDv1: {}", computed.cid_v1);
+            if let Some(v0) = &computed.cid_v0 {
+                println!("    CIDv0: {}", v0);
             }
         }
     } else {
         // Just compute and show CIDs
         let result = compute_cid(path)?;
 
-        println!("\nComputed CIDs (raw-leaves mode):");
+        println!("\nComputed CID:");
         println!("  CIDv1: {}", result.cid_v1);
         if let Some(v0) = &result.cid_v0 {
-            println!("  CIDv0: {}", v0);
-        }
-        println!("  Chunks: {}", result.chunk_count);
-        println!("  Raw codec: {}", result.is_raw);
-
-        // Also show legacy mode
-        let legacy = viewer_ingest::cid_compute::compute_cid_bytes_with_settings(
-            &data,
-            &CidSettings::legacy(),
-        );
-        println!("\nComputed CIDs (legacy mode):");
-        println!("  CIDv1: {}", legacy.cid_v1);
-        if let Some(v0) = &legacy.cid_v0 {
             println!("  CIDv0: {}", v0);
         }
     }

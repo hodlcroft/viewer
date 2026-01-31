@@ -45,6 +45,7 @@ xxhash-rust = { version = "0.8", features = ["xxh64"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }

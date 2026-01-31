@@ -24,8 +24,7 @@ pub mod writer;
 pub use analyze::TraitAnalysis;
 pub use bundle::{HcfBundleResult, HcfBundler, HcfConfig, HcfError, ImageLocation, ShardInfo};
 pub use cid_compute::{
-    CidInfo, CidSettings, ComputedCid, compute_cid, compute_cid_bytes, find_matching_cid,
-    parse_cid_info,
+    CidInfo, ComputedCid, compute_cid, compute_cid_bytes, find_matching_cid, parse_cid_info,
 };
 pub use fetch::{
     FetchResult, fetch_images, fetch_images_iiif, fetch_images_nftcdn, fetch_thumbnails_pinata,
