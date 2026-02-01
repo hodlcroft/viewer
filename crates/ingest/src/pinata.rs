@@ -50,6 +50,7 @@ pub enum PinataError {
 pub struct Group {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub is_public: bool,
     pub created_at: String,
 }

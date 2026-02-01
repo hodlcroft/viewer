@@ -1094,12 +1094,19 @@ async fn cmd_pinata_queue_status() -> anyhow::Result<()> {
 /// 2. Fetches collection metadata from CNFT.tools
 /// 3. Validates local raw files against on-chain CIDs
 /// 4. Uploads only valid files to Pinata
+/// Sync validated raw images to Pinata for a collection.
+///
+/// This command uses a streaming approach:
+/// 1. Loads config and fetches collection metadata
+/// 2. Fetches list of CIDs already in the Pinata group
+/// 3. For each asset: skip if already in Pinata, validate CID, upload if valid
 async fn cmd_pinata_sync(
     policy_id: &str,
     config_path: Option<PathBuf>,
     dry_run: bool,
 ) -> anyhow::Result<()> {
     use indicatif::{ProgressBar, ProgressStyle};
+    use std::collections::HashSet;
     use viewer_ingest::{
         extract_cid, find_matching_cid, AssetSource, CnftToolsSource, PinataClient,
     };
@@ -1135,6 +1142,21 @@ async fn cmd_pinata_sync(
     println!("  Group ID: {}", group_id);
     println!();
 
+    // Connect to Pinata and verify group exists
+    println!("Connecting to Pinata...");
+    let pinata = PinataClient::from_env()?;
+
+    let group = pinata.find_group_by_id(group_id).await?;
+    if group.is_none() {
+        anyhow::bail!("Pinata group not found: {}", group_id);
+    }
+
+    // Fetch existing files in the group
+    println!("Fetching existing files in Pinata group...");
+    let existing_files = pinata.list_files_in_group(group_id).await?;
+    let existing_cids: HashSet<String> = existing_files.iter().map(|f| f.cid.clone()).collect();
+    println!("  Found {} files already in group", existing_cids.len());
+
     // Fetch collection metadata
     println!("Fetching collection metadata...");
     let source = CnftToolsSource::new();
@@ -1157,9 +1179,9 @@ async fn cmd_pinata_sync(
     println!("  Assets with CIDs: {}", assets_with_cids.len());
     println!();
 
-    // Validate CIDs and collect files to upload
-    println!("Validating local files against on-chain CIDs...");
-    
+    // Process each asset: skip if in Pinata, validate, upload
+    println!("Processing assets...");
+
     let pb = ProgressBar::new(assets_with_cids.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -1168,13 +1190,21 @@ async fn cmd_pinata_sync(
             .progress_chars("#>-"),
     );
 
-    let mut valid_files: Vec<(PathBuf, String, String)> = Vec::new(); // (path, display_name, cid)
+    let mut already_in_pinata = 0usize;
+    let mut uploaded = 0usize;
     let mut invalid_cids: Vec<(String, String, String)> = Vec::new(); // (name, expected, got)
     let mut missing_files: Vec<String> = Vec::new();
+    let mut failed_uploads: Vec<String> = Vec::new();
 
     for (encoded_name, display_name, target_cid) in &assets_with_cids {
         pb.inc(1);
         pb.set_message(format!("{}", display_name));
+
+        // Skip if already in Pinata
+        if existing_cids.contains(target_cid) {
+            already_in_pinata += 1;
+            continue;
+        }
 
         // Try to find local file with various extensions
         let possible_paths: Vec<PathBuf> = ["png", "jpg", "jpeg", "webp", "gif"]
@@ -1186,37 +1216,70 @@ async fn cmd_pinata_sync(
 
         match local_file {
             Some(path) => {
+                // Validate CID
                 let data = std::fs::read(path)?;
-                if find_matching_cid(&data, target_cid).is_some() {
-                    valid_files.push((path.clone(), display_name.clone(), target_cid.clone()));
-                } else {
+                if find_matching_cid(&data, target_cid).is_none() {
                     let computed = viewer_ingest::compute_cid_bytes(&data);
                     invalid_cids.push((
                         display_name.clone(),
                         target_cid.clone(),
                         computed.cid_v1,
                     ));
+                    continue;
+                }
+
+                // Upload if not dry run
+                if !dry_run {
+                    match pinata.upload_file(path, Some(display_name), Some(group_id)).await {
+                        Ok(_result) => {
+                            uploaded += 1;
+                        }
+                        Err(e) => {
+                            failed_uploads.push(format!("{}: {}", display_name, e));
+                        }
+                    }
+                } else {
+                    uploaded += 1; // Count as "would upload" for dry run
                 }
             }
             None => {
                 missing_files.push(display_name.clone());
             }
         }
+
+        // Update progress message
+        pb.set_message(format!(
+            "pinata: {} new: {} invalid: {} missing: {}",
+            already_in_pinata, uploaded, invalid_cids.len(), missing_files.len()
+        ));
     }
 
     pb.finish_and_clear();
 
-    // Report validation results
-    println!("Validation complete:");
-    println!("  Valid:   {}", valid_files.len());
+    // Summary
+    println!();
+    if dry_run {
+        println!("DRY RUN complete:");
+    } else {
+        println!("Sync complete:");
+    }
+    println!("  Already in Pinata: {}", already_in_pinata);
+    if dry_run {
+        println!("  Would upload: {}", uploaded);
+    } else {
+        println!("  Uploaded: {}", uploaded);
+    }
     if !invalid_cids.is_empty() {
-        println!("  Invalid: {}", invalid_cids.len());
+        println!("  Invalid CIDs: {}", invalid_cids.len());
     }
     if !missing_files.is_empty() {
-        println!("  Missing: {}", missing_files.len());
+        println!("  Missing files: {}", missing_files.len());
+    }
+    if !failed_uploads.is_empty() {
+        println!("  Failed uploads: {}", failed_uploads.len());
     }
 
-    // Show invalid CIDs
+    // Report invalid CIDs
     if !invalid_cids.is_empty() {
         println!();
         println!("Invalid CIDs (file content doesn't match on-chain CID):");
@@ -1228,7 +1291,7 @@ async fn cmd_pinata_sync(
         }
     }
 
-    // Show missing files
+    // Report missing files
     if !missing_files.is_empty() {
         println!();
         println!("Missing files (not found in raw directory):");
@@ -1240,98 +1303,20 @@ async fn cmd_pinata_sync(
         }
     }
 
-    if valid_files.is_empty() {
-        println!();
-        println!("No valid files to upload.");
-        return Ok(());
-    }
-
-    println!();
-
-    if dry_run {
-        println!("DRY RUN - would upload {} files to Pinata group {}", valid_files.len(), group_id);
-        for (path, name, cid) in valid_files.iter().take(10) {
-            println!("  {} -> {} ({})", name, cid, path.display());
-        }
-        if valid_files.len() > 10 {
-            println!("  ... and {} more", valid_files.len() - 10);
-        }
-        return Ok(());
-    }
-
-    // Connect to Pinata
-    println!("Connecting to Pinata...");
-    let pinata = PinataClient::from_env()?;
-
-    // Verify group exists
-    let group = pinata.find_group_by_id(group_id).await?;
-    if group.is_none() {
-        anyhow::bail!("Pinata group not found: {}", group_id);
-    }
-    println!("  Using group: {}", group_id);
-    println!();
-
-    // Upload with progress
-    println!("Uploading {} validated files...", valid_files.len());
-
-    let pb = ProgressBar::new(valid_files.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
-
-    let mut uploaded = 0usize;
-    let mut duplicates = 0usize;
-    let mut failed: Vec<String> = Vec::new();
-
-    for (path, name, _cid) in &valid_files {
-        pb.set_message(format!("{}", name));
-
-        match pinata.upload_file(path, Some(name), Some(group_id)).await {
-            Ok(result) => {
-                if result.is_duplicate {
-                    duplicates += 1;
-                } else {
-                    uploaded += 1;
-                }
-            }
-            Err(e) => {
-                failed.push(format!("{}: {}", name, e));
-            }
-        }
-
-        pb.inc(1);
-        pb.set_message(format!("new: {} dup: {} fail: {}", uploaded, duplicates, failed.len()));
-    }
-
-    pb.finish_with_message(format!(
-        "done - new: {} dup: {} fail: {}",
-        uploaded, duplicates, failed.len()
-    ));
-
-    // Summary
-    println!();
-    println!("Upload complete:");
-    println!("  Uploaded: {}", uploaded);
-    println!("  Duplicates: {}", duplicates);
-    println!("  Failed: {}", failed.len());
-
-    if !failed.is_empty() {
+    // Report failed uploads
+    if !failed_uploads.is_empty() {
         println!();
         println!("Failed uploads:");
-        for err in failed.iter().take(10) {
+        for err in failed_uploads.iter().take(10) {
             println!("  {}", err);
         }
-        if failed.len() > 10 {
-            println!("  ... and {} more", failed.len() - 10);
+        if failed_uploads.len() > 10 {
+            println!("  ... and {} more", failed_uploads.len() - 10);
         }
     }
 
     Ok(())
 }
-
 
 fn cmd_info(path: &PathBuf) -> anyhow::Result<()> {
     let index_path = path.join("index.json");
