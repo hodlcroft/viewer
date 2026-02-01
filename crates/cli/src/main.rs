@@ -1335,6 +1335,25 @@ async fn cmd_pinata_sync(
                         }
                         Err(e) => {
                             failed_uploads.push(format!("{}: {}", display_name, e));
+                            // Abort early if too many failures
+                            const MAX_UPLOAD_FAILURES: usize = 10;
+                            if failed_uploads.len() >= MAX_UPLOAD_FAILURES {
+                                pb.finish_and_clear();
+                                println!();
+                                println!(
+                                    "Aborting: {} upload failures reached threshold",
+                                    MAX_UPLOAD_FAILURES
+                                );
+                                println!();
+                                println!("Failed uploads:");
+                                for err in &failed_uploads {
+                                    println!("  {}", err);
+                                }
+                                anyhow::bail!(
+                                    "Too many upload failures ({}). Check your Pinata API credentials and network connection.",
+                                    MAX_UPLOAD_FAILURES
+                                );
+                            }
                         }
                     }
                 } else {
