@@ -164,9 +164,11 @@ async fn main() -> anyhow::Result<()> {
         Commands::Pinata { action } => match action {
             PinataAction::PurgeQueue => cmd_pinata_purge_queue().await,
             PinataAction::QueueStatus => cmd_pinata_queue_status().await,
-            PinataAction::Sync { policy_id, config, dry_run } => {
-                cmd_pinata_sync(&policy_id, config, dry_run).await
-            }
+            PinataAction::Sync {
+                policy_id,
+                config,
+                dry_run,
+            } => cmd_pinata_sync(&policy_id, config, dry_run).await,
         },
         Commands::Cid { action } => match action {
             CidAction::Check {
@@ -312,7 +314,7 @@ fn setup_build_logging(log_path: &std::path::Path) -> anyhow::Result<()> {
             fmt::layer()
                 .with_writer(writer)
                 .with_ansi(false)
-                .with_filter(EnvFilter::new("info")),
+                .with_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap())),
         )
         .init();
 
@@ -1084,7 +1086,6 @@ async fn cmd_pinata_queue_status() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 /// Upload files to Pinata with progress reporting.
 
 /// Sync validated raw images to Pinata for a collection.
@@ -1100,25 +1101,36 @@ async fn cmd_pinata_queue_status() -> anyhow::Result<()> {
 /// 1. Loads config and fetches collection metadata
 /// 2. Fetches list of CIDs already in the Pinata group
 /// 3. For each asset: skip if already in Pinata, validate CID, upload if valid
+/// Sync validated raw images to Pinata for a collection.
+///
+/// This command efficiently determines which files need uploading:
+/// 1. Fetches on-chain CIDs from CNFT.tools
+/// 2. Fetches CIDs already in Pinata group
+/// 3. Computes the difference (needed = on_chain - pinata)
+/// 4. Only validates and uploads the needed files
 async fn cmd_pinata_sync(
     policy_id: &str,
     config_path: Option<PathBuf>,
     dry_run: bool,
 ) -> anyhow::Result<()> {
     use indicatif::{ProgressBar, ProgressStyle};
-    use std::collections::HashSet;
+    use std::collections::HashMap;
     use viewer_ingest::{
-        extract_cid, find_matching_cid, AssetSource, CnftToolsSource, PinataClient,
+        AssetSource, CnftToolsSource, PinataClient, extract_cid, find_matching_cid, to_cidv1,
     };
+
+    // Initialize tracing with RUST_LOG support
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(false)
+        .init();
 
     // Load config
     let config = load_cardano_config(policy_id, config_path.clone())?;
 
     // Check Pinata is configured
     if !config.pinata.is_enabled() {
-        anyhow::bail!(
-            "Pinata is not enabled in config. Add [pinata] section with enabled = true"
-        );
+        anyhow::bail!("Pinata is not enabled in config. Add [pinata] section with enabled = true");
     }
     let group_id = config
         .pinata
@@ -1137,7 +1149,12 @@ async fn cmd_pinata_sync(
     }
 
     println!("Pinata sync for: {}", policy_id);
-    println!("  Config: {}", config_path.map(|p| p.display().to_string()).unwrap_or_else(|| format!("configs/cardano/{}.toml", policy_id)));
+    println!(
+        "  Config: {}",
+        config_path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| format!("configs/cardano/{}.toml", policy_id))
+    );
     println!("  Raw dir: {}", raw_dir.display());
     println!("  Group ID: {}", group_id);
     println!();
@@ -1151,38 +1168,124 @@ async fn cmd_pinata_sync(
         anyhow::bail!("Pinata group not found: {}", group_id);
     }
 
-    // Fetch existing files in the group
-    println!("Fetching existing files in Pinata group...");
-    let existing_files = pinata.list_files_in_group(group_id).await?;
-    let existing_cids: HashSet<String> = existing_files.iter().map(|f| f.cid.clone()).collect();
-    println!("  Found {} files already in group", existing_cids.len());
-
-    // Fetch collection metadata
+    // Fetch collection metadata and build CID -> asset map
     println!("Fetching collection metadata...");
     let source = CnftToolsSource::new();
     let assets = source.fetch_collection(policy_id).await?;
     println!("  Found {} assets", assets.len());
 
-    // Build list of assets with CIDs
-    let mut assets_with_cids: Vec<(String, String, String)> = Vec::new(); // (encoded_name, display_name, cid)
-    for asset in &assets {
+    // Build map: CIDv1 -> (encoded_name, display_name, original_cid)
+    let mut cid_to_asset: HashMap<String, (String, String, String)> = HashMap::new();
+    let mut no_image_url = 0;
+    let mut no_cid_extracted = 0;
+    let mut no_cid_v1 = 0;
+    for (i, asset) in assets.iter().enumerate() {
         if let Some(ref image_url) = asset.image_url {
             if let Some(cid) = extract_cid(image_url) {
-                assets_with_cids.push((
-                    asset.encoded_name.clone(),
-                    asset.display_name.clone(),
-                    cid,
-                ));
+                if let Some(cid_v1) = to_cidv1(&cid) {
+                    cid_to_asset.insert(
+                        cid_v1,
+                        (asset.encoded_name.clone(), asset.display_name.clone(), cid),
+                    );
+                } else {
+                    no_cid_v1 += 1;
+                    if i < 3 {
+                        tracing::warn!("Failed to convert to CIDv1: {}", cid);
+                    }
+                }
+            } else {
+                no_cid_extracted += 1;
+                if i < 3 {
+                    tracing::warn!("Failed to extract CID from: {}", image_url);
+                }
             }
+        } else {
+            no_image_url += 1;
         }
     }
-    println!("  Assets with CIDs: {}", assets_with_cids.len());
+    tracing::info!(count = cid_to_asset.len(), "Assets with CIDs");
+    if no_image_url > 0 || no_cid_extracted > 0 || no_cid_v1 > 0 {
+        tracing::warn!(
+            no_image_url,
+            no_cid_extracted,
+            no_cid_v1,
+            "Some assets missing CID data"
+        );
+    }
+
+    // Log a sample of on-chain CIDs for debugging
+    for (i, (cid_v1, (_encoded, display_name, original))) in cid_to_asset.iter().enumerate() {
+        if i >= 3 {
+            break;
+        }
+        tracing::info!(
+            name = %display_name,
+            %cid_v1,
+            %original,
+            "On-chain sample"
+        );
+    }
+
+    // Stream through Pinata pages, removing matched CIDs as we go
+    println!("Checking existing files in Pinata group...");
+    let mut already_in_pinata = 0usize;
+
+    // Grab a few on-chain CIDs for comparison logging
+    let sample_onchain_cids: Vec<_> = cid_to_asset.keys().take(3).cloned().collect();
+    let mut logged_samples = 0usize;
+
+    pinata
+        .list_files_in_group_paged(group_id, 100, |files, total_fetched| {
+            for file in files {
+                if let Some(cid_v1) = to_cidv1(&file.cid) {
+                    // Log first 5 comparisons for debugging
+                    if logged_samples < 5 {
+                        tracing::debug!(
+                            pinata_v1 = %cid_v1,
+                            "Pinata CID"
+                        );
+                        logged_samples += 1;
+                    }
+
+                    if cid_to_asset.remove(&cid_v1).is_some() {
+                        already_in_pinata += 1;
+                    }
+                } else {
+                    tracing::warn!("Failed to convert Pinata CID to v1: {}", file.cid);
+                }
+            }
+
+            // Log on-chain samples on first page
+            if total_fetched <= 100 {
+                for cid in &sample_onchain_cids {
+                    tracing::debug!(onchain_v1 = %cid, "On-chain CID");
+                }
+            }
+
+            tracing::info!(
+                processed = total_fetched,
+                matched = already_in_pinata,
+                remaining = cid_to_asset.len(),
+                "Pinata page processed"
+            );
+            true // continue pagination
+        })
+        .await?;
+
+    println!("  Already in Pinata: {}", already_in_pinata);
+    println!("  Need to upload: {}", cid_to_asset.len());
+
+    if cid_to_asset.is_empty() {
+        println!();
+        println!("All files already in Pinata. Nothing to do.");
+        return Ok(());
+    }
+
     println!();
 
-    // Process each asset: skip if in Pinata, validate, upload
-    println!("Processing assets...");
-
-    let pb = ProgressBar::new(assets_with_cids.len() as u64);
+    // Process only the files that need uploading
+    let to_upload: Vec<_> = cid_to_asset.into_iter().collect();
+    let pb = ProgressBar::new(to_upload.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
@@ -1190,21 +1293,14 @@ async fn cmd_pinata_sync(
             .progress_chars("#>-"),
     );
 
-    let mut already_in_pinata = 0usize;
     let mut uploaded = 0usize;
     let mut invalid_cids: Vec<(String, String, String)> = Vec::new(); // (name, expected, got)
     let mut missing_files: Vec<String> = Vec::new();
     let mut failed_uploads: Vec<String> = Vec::new();
 
-    for (encoded_name, display_name, target_cid) in &assets_with_cids {
+    for (_target_cid, (encoded_name, display_name, original_cid)) in &to_upload {
         pb.inc(1);
         pb.set_message(format!("{}", display_name));
-
-        // Skip if already in Pinata
-        if existing_cids.contains(target_cid) {
-            already_in_pinata += 1;
-            continue;
-        }
 
         // Try to find local file with various extensions
         let possible_paths: Vec<PathBuf> = ["png", "jpg", "jpeg", "webp", "gif"]
@@ -1218,11 +1314,11 @@ async fn cmd_pinata_sync(
             Some(path) => {
                 // Validate CID
                 let data = std::fs::read(path)?;
-                if find_matching_cid(&data, target_cid).is_none() {
+                if find_matching_cid(&data, original_cid).is_none() {
                     let computed = viewer_ingest::compute_cid_bytes(&data);
                     invalid_cids.push((
                         display_name.clone(),
-                        target_cid.clone(),
+                        original_cid.clone(),
                         computed.cid_v1,
                     ));
                     continue;
@@ -1230,7 +1326,10 @@ async fn cmd_pinata_sync(
 
                 // Upload if not dry run
                 if !dry_run {
-                    match pinata.upload_file(path, Some(display_name), Some(group_id)).await {
+                    match pinata
+                        .upload_file(path, Some(display_name), Some(group_id))
+                        .await
+                    {
                         Ok(_result) => {
                             uploaded += 1;
                         }
@@ -1249,8 +1348,10 @@ async fn cmd_pinata_sync(
 
         // Update progress message
         pb.set_message(format!(
-            "pinata: {} new: {} invalid: {} missing: {}",
-            already_in_pinata, uploaded, invalid_cids.len(), missing_files.len()
+            "upload: {} invalid: {} missing: {}",
+            uploaded,
+            invalid_cids.len(),
+            missing_files.len()
         ));
     }
 
@@ -1260,13 +1361,11 @@ async fn cmd_pinata_sync(
     println!();
     if dry_run {
         println!("DRY RUN complete:");
-    } else {
-        println!("Sync complete:");
-    }
-    println!("  Already in Pinata: {}", already_in_pinata);
-    if dry_run {
+        println!("  Already in Pinata: {}", already_in_pinata);
         println!("  Would upload: {}", uploaded);
     } else {
+        println!("Sync complete:");
+        println!("  Already in Pinata: {}", already_in_pinata);
         println!("  Uploaded: {}", uploaded);
     }
     if !invalid_cids.is_empty() {

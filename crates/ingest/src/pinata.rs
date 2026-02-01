@@ -3,7 +3,7 @@
 //! Provides group management and CID pinning functionality for collections
 //! that want guaranteed availability via Pinata's infrastructure.
 
-use reqwest::{multipart, Client};
+use reqwest::{Client, multipart};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -155,21 +155,26 @@ struct PinByCidRequest {
 }
 
 /// Response from file upload.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct UploadedFile {
     pub id: String,
     pub name: String,
     pub cid: String,
     pub size: u64,
-    pub mime_type: String,
-    pub group_id: Option<String>,
-    #[serde(default)]
     pub is_duplicate: bool,
 }
 
+/// Response from legacy pinFileToIPFS endpoint.
 #[derive(Debug, Deserialize)]
-struct UploadResponse {
-    data: UploadedFile,
+#[serde(rename_all = "PascalCase")]
+struct LegacyPinResponse {
+    ipfs_pin_hash: String,
+    #[serde(default)]
+    pin_size: Option<u64>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default, alias = "isDuplicate")]
+    is_duplicate: Option<bool>,
 }
 
 impl PinataClient {
@@ -415,6 +420,61 @@ impl PinataClient {
         Ok(all_files)
     }
 
+    /// List files in a group with a callback for each page.
+    /// Useful for streaming comparison without loading all files into memory.
+    pub async fn list_files_in_group_paged<F>(
+        &self,
+        group_id: &str,
+        page_size: usize,
+        mut on_page: F,
+    ) -> Result<(), PinataError>
+    where
+        F: FnMut(&[PinataFile], usize) -> bool, // returns true to continue, false to stop
+    {
+        let mut page_token: Option<String> = None;
+        let mut total_fetched = 0usize;
+
+        loop {
+            let mut url = format!(
+                "{}/files/public?group={}&limit={}",
+                PINATA_API_BASE, group_id, page_size
+            );
+
+            if let Some(ref token) = page_token {
+                url = format!("{}&pageToken={}", url, token);
+            }
+
+            debug!("Listing files page: {}", url);
+
+            let response = self
+                .send_with_retry(self.client.get(&url).bearer_auth(&self.jwt))
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status().as_u16();
+                let message = response.text().await.unwrap_or_default();
+                return Err(PinataError::Api { status, message });
+            }
+
+            let result: FilesListResponse = response.json().await?;
+            let files_in_page = result.data.files.len();
+            total_fetched += files_in_page;
+
+            // Call the callback with this page
+            if !on_page(&result.data.files, total_fetched) {
+                break; // Callback requested stop
+            }
+
+            // Only continue pagination if we got a full page of results
+            match result.data.next_page_token {
+                Some(token) if !token.is_empty() && files_in_page > 0 => page_token = Some(token),
+                _ => break,
+            }
+        }
+
+        Ok(())
+    }
+
     /// Check if a CID is already pinned (anywhere in account).
     pub async fn find_file_by_cid(&self, cid: &str) -> Result<Option<PinataFile>, PinataError> {
         let url = format!("{}/files/public?cid={}", PINATA_API_BASE, cid);
@@ -488,7 +548,6 @@ impl PinataClient {
         }
 
         Ok(())
-
     }
     /// Upload a file to Pinata.
     ///
@@ -502,21 +561,27 @@ impl PinataClient {
     ///
     /// # Returns
     /// The uploaded file information including its CID.
+    /// Upload a file to Pinata using the legacy pinning API with CIDv0.
+    ///
+    /// Uses the legacy `pinFileToIPFS` endpoint which supports `cidVersion: 0`
+    /// to ensure CIDs match on-chain CIDv0 references.
     pub async fn upload_file(
         &self,
         path: &Path,
         name: Option<&str>,
         group_id: Option<&str>,
     ) -> Result<UploadedFile, PinataError> {
-        const UPLOAD_BASE: &str = "https://uploads.pinata.cloud/v3";
+        const PINNING_API: &str = "https://api.pinata.cloud/pinning/pinFileToIPFS";
 
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file");
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
         let display_name = name.unwrap_or(file_name);
 
-        debug!("Uploading file {} as '{}' to group {:?}", path.display(), display_name, group_id);
+        debug!(
+            "Uploading file {} as '{}' to group {:?}",
+            path.display(),
+            display_name,
+            group_id
+        );
 
         // Read file contents
         let file_bytes = tokio::fs::read(path).await.map_err(|e| {
@@ -540,16 +605,23 @@ impl PinataClient {
             .mime_str(mime_type)
             .map_err(|e| PinataError::InvalidResponse(format!("Invalid MIME type: {}", e)))?;
 
-        let mut form = multipart::Form::new()
-            .part("file", file_part)
-            .text("name", display_name.to_string())
-            .text("network", "public");
+        // pinataMetadata for naming
+        let metadata = serde_json::json!({
+            "name": display_name
+        });
 
+        // pinataOptions with cidVersion: 0 for CIDv0 compatibility
+        let mut options = serde_json::json!({
+            "cidVersion": 0
+        });
         if let Some(gid) = group_id {
-            form = form.text("group_id", gid.to_string());
+            options["groupId"] = serde_json::Value::String(gid.to_string());
         }
 
-        let url = format!("{}/files", UPLOAD_BASE);
+        let form = multipart::Form::new()
+            .part("file", file_part)
+            .text("pinataMetadata", metadata.to_string())
+            .text("pinataOptions", options.to_string());
 
         // Note: multipart requests cannot use send_with_retry easily,
         // so we handle rate limiting manually
@@ -557,7 +629,7 @@ impl PinataClient {
 
         let response = self
             .client
-            .post(&url)
+            .post(PINNING_API)
             .bearer_auth(&self.jwt)
             .multipart(form)
             .send()
@@ -569,15 +641,23 @@ impl PinataClient {
             return Err(PinataError::Api { status, message });
         }
 
-        let result: UploadResponse = response.json().await?;
-        
-        if result.data.is_duplicate {
-            debug!("File already exists with CID {}", result.data.cid);
+        // Legacy API returns different response format
+        let result: LegacyPinResponse = response.json().await?;
+
+        let is_duplicate = result.is_duplicate.unwrap_or(false);
+        if is_duplicate {
+            debug!(cid = %result.ipfs_pin_hash, name = %display_name, "File already pinned");
         } else {
-            info!("Uploaded {} -> CID {}", display_name, result.data.cid);
+            debug!(cid = %result.ipfs_pin_hash, name = %display_name, "Uploaded file");
         }
 
-        Ok(result.data)
+        Ok(UploadedFile {
+            id: result.id.unwrap_or_default(),
+            name: display_name.to_string(),
+            cid: result.ipfs_pin_hash,
+            size: result.pin_size.unwrap_or(0),
+            is_duplicate,
+        })
     }
 
     /// Upload multiple files to Pinata with progress reporting.
