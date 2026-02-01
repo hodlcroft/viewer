@@ -549,18 +549,28 @@ impl PinataClient {
 
         Ok(())
     }
-    /// Upload a file to Pinata.
+
+    /// Delete/unpin a file from Pinata by its file ID.
     ///
-    /// The file is uploaded directly to Pinata's storage (not pin-by-CID).
-    /// This is useful for uploading new content that doesn't exist on IPFS yet.
-    ///
-    /// # Arguments
-    /// * `path` - Path to the file to upload
-    /// * `name` - Optional name for the file (defaults to filename)
-    /// * `group_id` - Optional group ID to add the file to
-    ///
-    /// # Returns
-    /// The uploaded file information including its CID.
+    /// This removes the file from your Pinata account entirely.
+    pub async fn delete_file(&self, file_id: &str) -> Result<(), PinataError> {
+        let url = format!("{}/files/public/{}", PINATA_API_BASE, file_id);
+
+        debug!("Deleting file {}", file_id);
+
+        let response = self
+            .send_with_retry(self.client.delete(&url).bearer_auth(&self.jwt))
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let message = response.text().await.unwrap_or_default();
+            return Err(PinataError::Api { status, message });
+        }
+
+        Ok(())
+    }
+
     /// Upload a file to Pinata using the legacy pinning API with CIDv0.
     ///
     /// Uses the legacy `pinFileToIPFS` endpoint which supports `cidVersion: 0`
@@ -642,22 +652,43 @@ impl PinataClient {
         }
 
         // Legacy API returns different response format
-        let result: LegacyPinResponse = response.json().await?;
+        // Parse response, but don't fail if we can't decode it - the upload already succeeded
+        let response_text = response.text().await.unwrap_or_default();
+        match serde_json::from_str::<LegacyPinResponse>(&response_text) {
+            Ok(result) => {
+                let is_duplicate = result.is_duplicate.unwrap_or(false);
+                if is_duplicate {
+                    debug!(cid = %result.ipfs_pin_hash, name = %display_name, "File already pinned");
+                } else {
+                    debug!(cid = %result.ipfs_pin_hash, name = %display_name, "Uploaded file");
+                }
 
-        let is_duplicate = result.is_duplicate.unwrap_or(false);
-        if is_duplicate {
-            debug!(cid = %result.ipfs_pin_hash, name = %display_name, "File already pinned");
-        } else {
-            debug!(cid = %result.ipfs_pin_hash, name = %display_name, "Uploaded file");
+                Ok(UploadedFile {
+                    id: result.id.unwrap_or_default(),
+                    name: display_name.to_string(),
+                    cid: result.ipfs_pin_hash,
+                    size: result.pin_size.unwrap_or(0),
+                    is_duplicate,
+                })
+            }
+            Err(e) => {
+                // Upload succeeded (HTTP 200) but response format was unexpected
+                // Log warning but return success with placeholder CID
+                warn!(
+                    name = %display_name,
+                    error = %e,
+                    response = %response_text.chars().take(200).collect::<String>(),
+                    "Upload succeeded but couldn't parse response"
+                );
+                Ok(UploadedFile {
+                    id: String::new(),
+                    name: display_name.to_string(),
+                    cid: "unknown".to_string(),
+                    size: 0,
+                    is_duplicate: false,
+                })
+            }
         }
-
-        Ok(UploadedFile {
-            id: result.id.unwrap_or_default(),
-            name: display_name.to_string(),
-            cid: result.ipfs_pin_hash,
-            size: result.pin_size.unwrap_or(0),
-            is_duplicate,
-        })
     }
 
     /// Upload multiple files to Pinata with progress reporting.

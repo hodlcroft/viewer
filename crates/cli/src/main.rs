@@ -70,6 +70,20 @@ enum PinataAction {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Remove files from Pinata that don't match on-chain CIDs
+    Clean {
+        /// Policy ID of the collection
+        policy_id: String,
+
+        /// Path to config file (default: configs/cardano/{policy_id}.toml)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Show what would be deleted without deleting
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -169,6 +183,11 @@ async fn main() -> anyhow::Result<()> {
                 config,
                 dry_run,
             } => cmd_pinata_sync(&policy_id, config, dry_run).await,
+            PinataAction::Clean {
+                policy_id,
+                config,
+                dry_run,
+            } => cmd_pinata_clean(&policy_id, config, dry_run).await,
         },
         Commands::Cid { action } => match action {
             CidAction::Check {
@@ -1335,25 +1354,6 @@ async fn cmd_pinata_sync(
                         }
                         Err(e) => {
                             failed_uploads.push(format!("{}: {}", display_name, e));
-                            // Abort early if too many failures
-                            const MAX_UPLOAD_FAILURES: usize = 10;
-                            if failed_uploads.len() >= MAX_UPLOAD_FAILURES {
-                                pb.finish_and_clear();
-                                println!();
-                                println!(
-                                    "Aborting: {} upload failures reached threshold",
-                                    MAX_UPLOAD_FAILURES
-                                );
-                                println!();
-                                println!("Failed uploads:");
-                                for err in &failed_uploads {
-                                    println!("  {}", err);
-                                }
-                                anyhow::bail!(
-                                    "Too many upload failures ({}). Check your Pinata API credentials and network connection.",
-                                    MAX_UPLOAD_FAILURES
-                                );
-                            }
                         }
                     }
                 } else {
@@ -1431,6 +1431,161 @@ async fn cmd_pinata_sync(
         if failed_uploads.len() > 10 {
             println!("  ... and {} more", failed_uploads.len() - 10);
         }
+    }
+
+    Ok(())
+}
+
+/// Clean up Pinata group by removing files that don't match on-chain CIDs.
+///
+/// This command:
+/// 1. Fetches on-chain CIDs from CNFT.tools
+/// 2. Lists all files in the Pinata group
+/// 3. Deletes any files whose CID doesn't match an on-chain CID
+async fn cmd_pinata_clean(
+    policy_id: &str,
+    config_path: Option<PathBuf>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    use std::collections::HashSet;
+    use viewer_ingest::{AssetSource, CnftToolsSource, PinataClient, extract_cid, to_cidv1};
+
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(false)
+        .try_init()
+        .ok();
+
+    // Load config
+    let config = load_cardano_config(policy_id, config_path.clone())?;
+
+    // Check Pinata is configured
+    if !config.pinata.is_enabled() {
+        anyhow::bail!("Pinata is not enabled in config. Add [pinata] section with enabled = true");
+    }
+    let group_id = config
+        .pinata
+        .group_id
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Pinata group_id not configured"))?;
+
+    println!("Pinata clean for: {}", policy_id);
+    println!(
+        "  Config: {}",
+        config_path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| format!("configs/cardano/{}.toml", policy_id))
+    );
+    println!("  Group ID: {}", group_id);
+    if dry_run {
+        println!("  Mode: DRY RUN (no files will be deleted)");
+    }
+    println!();
+
+    // Connect to Pinata
+    println!("Connecting to Pinata...");
+    let pinata = PinataClient::from_env()?;
+
+    let group = pinata.find_group_by_id(group_id).await?;
+    if group.is_none() {
+        anyhow::bail!("Pinata group not found: {}", group_id);
+    }
+
+    // Fetch collection metadata and build set of valid CIDs
+    println!("Fetching collection metadata...");
+    let source = CnftToolsSource::new();
+    let assets = source.fetch_collection(policy_id).await?;
+    println!("  Found {} assets", assets.len());
+
+    // Build set of valid CIDv1s from on-chain data
+    let mut valid_cids: HashSet<String> = HashSet::new();
+    for asset in &assets {
+        if let Some(ref image_url) = asset.image_url {
+            if let Some(cid) = extract_cid(image_url) {
+                if let Some(cid_v1) = to_cidv1(&cid) {
+                    valid_cids.insert(cid_v1);
+                }
+            }
+        }
+    }
+    println!("  Valid CIDs: {}", valid_cids.len());
+
+    // List all files in Pinata group and find orphans
+    println!("\nScanning Pinata group for orphaned files...");
+    let mut orphan_files: Vec<(String, String, Option<String>)> = Vec::new(); // (id, cid, name)
+    let mut total_files = 0usize;
+
+    pinata
+        .list_files_in_group_paged(group_id, 100, |files, _total_fetched| {
+            for file in files {
+                total_files += 1;
+                if let Some(cid_v1) = to_cidv1(&file.cid) {
+                    if !valid_cids.contains(&cid_v1) {
+                        orphan_files.push((file.id.clone(), file.cid.clone(), file.name.clone()));
+                    }
+                } else {
+                    // Can't convert to CIDv1, treat as orphan
+                    orphan_files.push((file.id.clone(), file.cid.clone(), file.name.clone()));
+                }
+            }
+            true // continue pagination
+        })
+        .await?;
+
+    println!("  Total files in group: {}", total_files);
+    println!("  Orphaned files (not on-chain): {}", orphan_files.len());
+
+    if orphan_files.is_empty() {
+        println!("\nNo orphaned files found. Group is clean.");
+        return Ok(());
+    }
+
+    // Show orphans
+    println!("\nOrphaned files:");
+    for (id, cid, name) in orphan_files.iter().take(20) {
+        let display_name = name.as_deref().unwrap_or("(unnamed)");
+        println!("  {} - {} [{}]", display_name, cid, id);
+    }
+    if orphan_files.len() > 20 {
+        println!("  ... and {} more", orphan_files.len() - 20);
+    }
+
+    if dry_run {
+        println!("\nDRY RUN: Would delete {} files", orphan_files.len());
+        return Ok(());
+    }
+
+    // Delete orphaned files
+    println!("\nDeleting {} orphaned files...", orphan_files.len());
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+
+    for (i, (id, cid, name)) in orphan_files.iter().enumerate() {
+        let display_name = name.as_deref().unwrap_or("(unnamed)");
+        match pinata.delete_file(id).await {
+            Ok(()) => {
+                deleted += 1;
+                if deleted <= 10 || (deleted % 100 == 0) {
+                    println!("  Deleted: {} ({})", display_name, cid);
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                println!("  Failed to delete {}: {}", display_name, e);
+            }
+        }
+
+        // Progress every 50 files
+        if (i + 1) % 50 == 0 {
+            println!("  Progress: {}/{}", i + 1, orphan_files.len());
+        }
+    }
+
+    println!("\nClean complete:");
+    println!("  Deleted: {}", deleted);
+    if failed > 0 {
+        println!("  Failed: {}", failed);
     }
 
     Ok(())

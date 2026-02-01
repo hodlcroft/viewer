@@ -92,3 +92,11 @@ pinata-queue-status:
 # Purge Pinata pin queue
 pinata-purge-queue:
     cargo run --release --package viewer-cli -- pinata purge-queue
+
+# Clean orphaned files from Pinata (files not matching on-chain CIDs)
+pinata-clean policy_id:
+    cargo run --release --package viewer-cli -- pinata clean {{ policy_id }}
+
+# Clean orphaned files from Pinata (dry run)
+pinata-clean-dry policy_id:
+    cargo run --release --package viewer-cli -- pinata clean {{ policy_id }} --dry-run
