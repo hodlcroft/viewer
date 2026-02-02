@@ -17,7 +17,7 @@ use viewer_format::IpfsGateway;
 
 /// Convert a CID (v0 or v1) to CIDv1 string.
 /// Blockfrost requires CIDv1 format.
-fn to_cidv1(cid_str: &str) -> Option<String> {
+pub fn to_cidv1(cid_str: &str) -> Option<String> {
     let cid = Cid::from_str(cid_str).ok()?;
     let cidv1 = if cid.version() == cid::Version::V0 {
         Cid::new_v1(cid.codec(), cid.hash().to_owned())
@@ -604,6 +604,26 @@ mod tests {
         assert_eq!(
             gateway.build_url("QmTest", Some("path/image.png")),
             Some("https://test.io/ipfs/QmTest/path/image.png".to_string())
+        );
+    }
+
+    #[test]
+    fn test_v0_to_v1_conversion() {
+        // Verify v0 to v1 conversion is deterministic
+        let v0 = "QmbEHKzWVaEuJug9SvcbC1UZayq9N6xvVhNuqvb5VzXbkP";
+        let converted = to_cidv1(v0).unwrap();
+
+        // Should produce a valid v1 CID starting with bafybei (dag-pb + sha256)
+        assert!(
+            converted.starts_with("bafybei"),
+            "Should convert to CIDv1 with dag-pb codec"
+        );
+
+        // Conversion should be idempotent
+        let double_converted = to_cidv1(&converted).unwrap();
+        assert_eq!(
+            converted, double_converted,
+            "Converting v1 again should return same value"
         );
     }
 }

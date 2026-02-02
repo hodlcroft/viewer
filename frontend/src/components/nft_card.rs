@@ -21,6 +21,12 @@ fn rarity_class(rank: u16, total: u32) -> &'static str {
     }
 }
 
+/// Format rank with appropriate width based on collection size
+fn format_rank(rank: u16, total: u32) -> String {
+    let width = total.max(1).ilog10() as usize + 1;
+    format!("{:0width$}", rank)
+}
+
 #[component]
 pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
     // Get collection config from context (provided by GalleryPage)
@@ -46,17 +52,24 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
 
     view! {
         <A href=detail_url attr:class="nft-card" attr:id=anchor_id>
-            <div
-                class="nft-card-sprite"
-                style=bg_style
-                role="img"
-                aria-label=format!("NFT {name}")
-            ></div>
+            <div class="nft-card-image">
+                <div
+                    class="nft-card-sprite"
+                    style=bg_style
+                    role="img"
+                    aria-label=format!("NFT {name}")
+                ></div>
+                {(!hide_rarity && token.rarity_rank > 0).then(|| {
+                    let formatted = format_rank(token.rarity_rank, total_tokens);
+                    view! {
+                        <span class={format!("rank-badge {rank_class}")}>
+                            {formatted}
+                        </span>
+                    }
+                })}
+            </div>
             <div class="nft-card-info">
                 <strong>{name}</strong>
-                {(!hide_rarity && token.rarity_rank > 0).then(|| view! {
-                    <span class={format!("rank {rank_class}")}>{format!("Rank #{}", token.rarity_rank)}</span>
-                })}
             </div>
         </A>
     }

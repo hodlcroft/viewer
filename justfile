@@ -52,3 +52,51 @@ sync-cardano-debug policy_id:
 # Run with trace logging (very verbose)
 sync-cardano-trace policy_id:
     RUST_LOG=trace cargo run --package viewer-cli -- sync cardano {{ policy_id }}
+
+# CID commands
+
+# Check CIDs for a collection (analyze only)
+cid-check policy_id:
+    cargo run --package viewer-cli -- cid check {{ policy_id }}
+
+# Validate local raw files against collection CIDs
+cid-validate policy_id:
+    cargo run --package viewer-cli -- cid check {{ policy_id }} --local-dir .build/{{ policy_id }}/raw
+
+# Compute CID for a local file
+cid-compute path:
+    cargo run --package viewer-cli -- cid compute {{ path }}
+
+# Compute CID and try to match a target
+cid-match path target:
+    cargo run --package viewer-cli -- cid compute {{ path }} --target {{ target }}
+
+# Show info about a CID
+cid-info cid:
+    cargo run --package viewer-cli -- cid info {{ cid }}
+
+# Pinata commands
+
+# Sync validated raw files to Pinata for a collection
+pinata-sync policy_id:
+    cargo run --release --package viewer-cli -- pinata sync {{ policy_id }}
+
+# Sync to Pinata (dry run)
+pinata-sync-dry policy_id:
+    cargo run --release --package viewer-cli -- pinata sync {{ policy_id }} --dry-run
+
+# Show Pinata pin queue status
+pinata-queue-status:
+    cargo run --release --package viewer-cli -- pinata queue-status
+
+# Purge Pinata pin queue
+pinata-purge-queue:
+    cargo run --release --package viewer-cli -- pinata purge-queue
+
+# Clean orphaned files from Pinata (files not matching on-chain CIDs)
+pinata-clean policy_id:
+    cargo run --release --package viewer-cli -- pinata clean {{ policy_id }}
+
+# Clean orphaned files from Pinata (dry run)
+pinata-clean-dry policy_id:
+    cargo run --release --package viewer-cli -- pinata clean {{ policy_id }} --dry-run

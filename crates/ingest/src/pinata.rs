@@ -3,13 +3,22 @@
 //! Provides group management and CID pinning functionality for collections
 //! that want guaranteed availability via Pinata's infrastructure.
 
-use reqwest::Client;
+use reqwest::{Client, multipart};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
 const PINATA_API_BASE: &str = "https://api.pinata.cloud/v3";
+
+/// Maximum number of pending pin requests before we pause and wait.
+/// Pinata can handle ~250 active requests before backfilling.
+const PIN_QUEUE_CAPACITY: usize = 100;
+
+/// Delay between API requests to respect rate limits.
+/// 250 requests/minute = ~4 requests/second = 250ms between requests.
+const API_RATE_LIMIT_DELAY: Duration = Duration::from_millis(250);
 
 /// Pinata API client.
 #[derive(Clone)]
@@ -17,6 +26,7 @@ pub struct PinataClient {
     client: Client,
     jwt: String,
     gateway_host: Option<String>,
+    gateway_key: Option<String>,
 }
 
 /// Pinata API errors.
@@ -40,6 +50,7 @@ pub enum PinataError {
 pub struct Group {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub is_public: bool,
     pub created_at: String,
 }
@@ -143,15 +154,40 @@ struct PinByCidRequest {
     group_id: Option<String>,
 }
 
+/// Response from file upload.
+#[derive(Debug, Clone)]
+pub struct UploadedFile {
+    pub id: String,
+    pub name: String,
+    pub cid: String,
+    pub size: u64,
+    pub is_duplicate: bool,
+}
+
+/// Response from legacy pinFileToIPFS endpoint.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct LegacyPinResponse {
+    ipfs_pin_hash: String,
+    #[serde(default)]
+    pin_size: Option<u64>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default, alias = "isDuplicate")]
+    is_duplicate: Option<bool>,
+}
+
 impl PinataClient {
     /// Create a new Pinata client from environment variables.
     ///
     /// Requires `PINATA_API_JWT` to be set.
     /// Optionally uses `PINATA_GATEWAY_HOST` for optimized image URLs.
+    /// Optionally uses `PINATA_GATEWAY_KEY` for dedicated gateway authentication.
     pub fn from_env() -> Result<Self, PinataError> {
         let jwt = std::env::var("PINATA_API_JWT").map_err(|_| PinataError::MissingJwt)?;
 
         let gateway_host = std::env::var("PINATA_GATEWAY_HOST").ok();
+        let gateway_key = std::env::var("PINATA_GATEWAY_KEY").ok();
 
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -162,6 +198,7 @@ impl PinataClient {
             client,
             jwt,
             gateway_host,
+            gateway_key,
         })
     }
 
@@ -231,13 +268,25 @@ impl PinataClient {
 
     /// Build an optimized image URL for a CID.
     ///
-    /// Uses Pinata's image optimization parameters.
-    pub fn image_url(&self, cid: &str, width: u32, format: &str) -> Option<String> {
+    /// Uses Pinata's image optimization parameters:
+    /// - `img-width` + `img-height` = square bounding box
+    /// - `img-fit=contain` = preserve aspect ratio, letterbox/pillarbox if needed
+    /// - `img-format` = explicit format (png for thumbnails, webp for viewer)
+    /// - `pinataGatewayToken` = authentication for dedicated gateways
+    pub fn image_url(&self, cid: &str, size: u32, format: &str) -> Option<String> {
         let host = self.gateway_host.as_ref()?;
-        Some(format!(
-            "https://{}/ipfs/{}?img-width={}&img-format={}",
-            host, cid, width, format
-        ))
+        let mut url = format!(
+            "https://{}/ipfs/{}?img-width={}&img-height={}&img-fit=contain&img-format={}",
+            host, cid, size, size, format
+        );
+
+        // Add gateway key if configured (required for dedicated gateways)
+        if let Some(key) = &self.gateway_key {
+            url.push_str("&pinataGatewayToken=");
+            url.push_str(key);
+        }
+
+        Some(url)
     }
 
     /// List groups, optionally filtering by name.
@@ -268,6 +317,12 @@ impl PinataClient {
     pub async fn find_group(&self, name: &str) -> Result<Option<Group>, PinataError> {
         let groups = self.list_groups(Some(name)).await?;
         Ok(groups.into_iter().find(|g| g.name == name))
+    }
+
+    /// Find a group by ID.
+    pub async fn find_group_by_id(&self, id: &str) -> Result<Option<Group>, PinataError> {
+        let groups = self.list_groups(None).await?;
+        Ok(groups.into_iter().find(|g| g.id == id))
     }
 
     /// Create a new group.
@@ -351,15 +406,73 @@ impl PinataClient {
             }
 
             let result: FilesListResponse = response.json().await?;
+            let files_in_page = result.data.files.len();
             all_files.extend(result.data.files);
 
+            // Only continue pagination if we got a full page of results
+            // Pinata sometimes returns next_page_token even with empty/partial results
             match result.data.next_page_token {
-                Some(token) if !token.is_empty() => page_token = Some(token),
+                Some(token) if !token.is_empty() && files_in_page > 0 => page_token = Some(token),
                 _ => break,
             }
         }
 
         Ok(all_files)
+    }
+
+    /// List files in a group with a callback for each page.
+    /// Useful for streaming comparison without loading all files into memory.
+    pub async fn list_files_in_group_paged<F>(
+        &self,
+        group_id: &str,
+        page_size: usize,
+        mut on_page: F,
+    ) -> Result<(), PinataError>
+    where
+        F: FnMut(&[PinataFile], usize) -> bool, // returns true to continue, false to stop
+    {
+        let mut page_token: Option<String> = None;
+        let mut total_fetched = 0usize;
+
+        loop {
+            let mut url = format!(
+                "{}/files/public?group={}&limit={}",
+                PINATA_API_BASE, group_id, page_size
+            );
+
+            if let Some(ref token) = page_token {
+                url = format!("{}&pageToken={}", url, token);
+            }
+
+            debug!("Listing files page: {}", url);
+
+            let response = self
+                .send_with_retry(self.client.get(&url).bearer_auth(&self.jwt))
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status().as_u16();
+                let message = response.text().await.unwrap_or_default();
+                return Err(PinataError::Api { status, message });
+            }
+
+            let result: FilesListResponse = response.json().await?;
+            let files_in_page = result.data.files.len();
+            total_fetched += files_in_page;
+
+            // Call the callback with this page
+            if !on_page(&result.data.files, total_fetched) {
+                break; // Callback requested stop
+            }
+
+            // Only continue pagination if we got a full page of results
+            match result.data.next_page_token {
+                Some(token) if !token.is_empty() && files_in_page > 0 => page_token = Some(token),
+                _ => break,
+            }
+        }
+
+        Ok(())
     }
 
     /// Check if a CID is already pinned (anywhere in account).
@@ -437,6 +550,193 @@ impl PinataClient {
         Ok(())
     }
 
+    /// Delete/unpin a file from Pinata by its file ID.
+    ///
+    /// This removes the file from your Pinata account entirely.
+    pub async fn delete_file(&self, file_id: &str) -> Result<(), PinataError> {
+        let url = format!("{}/files/public/{}", PINATA_API_BASE, file_id);
+
+        debug!("Deleting file {}", file_id);
+
+        let response = self
+            .send_with_retry(self.client.delete(&url).bearer_auth(&self.jwt))
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let message = response.text().await.unwrap_or_default();
+            return Err(PinataError::Api { status, message });
+        }
+
+        Ok(())
+    }
+
+    /// Upload a file to Pinata using the legacy pinning API with CIDv0.
+    ///
+    /// Uses the legacy `pinFileToIPFS` endpoint which supports `cidVersion: 0`
+    /// to ensure CIDs match on-chain CIDv0 references.
+    pub async fn upload_file(
+        &self,
+        path: &Path,
+        name: Option<&str>,
+        group_id: Option<&str>,
+    ) -> Result<UploadedFile, PinataError> {
+        const PINNING_API: &str = "https://api.pinata.cloud/pinning/pinFileToIPFS";
+
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+        let display_name = name.unwrap_or(file_name);
+
+        debug!(
+            "Uploading file {} as '{}' to group {:?}",
+            path.display(),
+            display_name,
+            group_id
+        );
+
+        // Read file contents
+        let file_bytes = tokio::fs::read(path).await.map_err(|e| {
+            PinataError::InvalidResponse(format!("Failed to read file {}: {}", path.display(), e))
+        })?;
+
+        // Detect MIME type from extension
+        let mime_type = match path.extension().and_then(|e| e.to_str()) {
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("svg") => "image/svg+xml",
+            Some("json") => "application/json",
+            _ => "application/octet-stream",
+        };
+
+        // Build multipart form
+        let file_part = multipart::Part::bytes(file_bytes)
+            .file_name(file_name.to_string())
+            .mime_str(mime_type)
+            .map_err(|e| PinataError::InvalidResponse(format!("Invalid MIME type: {}", e)))?;
+
+        // pinataMetadata for naming
+        let metadata = serde_json::json!({
+            "name": display_name
+        });
+
+        // pinataOptions with cidVersion: 0 for CIDv0 compatibility
+        let mut options = serde_json::json!({
+            "cidVersion": 0
+        });
+        if let Some(gid) = group_id {
+            options["groupId"] = serde_json::Value::String(gid.to_string());
+        }
+
+        let form = multipart::Form::new()
+            .part("file", file_part)
+            .text("pinataMetadata", metadata.to_string())
+            .text("pinataOptions", options.to_string());
+
+        // Note: multipart requests cannot use send_with_retry easily,
+        // so we handle rate limiting manually
+        tokio::time::sleep(API_RATE_LIMIT_DELAY).await;
+
+        let response = self
+            .client
+            .post(PINNING_API)
+            .bearer_auth(&self.jwt)
+            .multipart(form)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let message = response.text().await.unwrap_or_default();
+            return Err(PinataError::Api { status, message });
+        }
+
+        // Legacy API returns different response format
+        // Parse response, but don't fail if we can't decode it - the upload already succeeded
+        let response_text = response.text().await.unwrap_or_default();
+        match serde_json::from_str::<LegacyPinResponse>(&response_text) {
+            Ok(result) => {
+                let is_duplicate = result.is_duplicate.unwrap_or(false);
+                if is_duplicate {
+                    debug!(cid = %result.ipfs_pin_hash, name = %display_name, "File already pinned");
+                } else {
+                    debug!(cid = %result.ipfs_pin_hash, name = %display_name, "Uploaded file");
+                }
+
+                Ok(UploadedFile {
+                    id: result.id.unwrap_or_default(),
+                    name: display_name.to_string(),
+                    cid: result.ipfs_pin_hash,
+                    size: result.pin_size.unwrap_or(0),
+                    is_duplicate,
+                })
+            }
+            Err(e) => {
+                // Upload succeeded (HTTP 200) but response format was unexpected
+                // Log warning but return success with placeholder CID
+                warn!(
+                    name = %display_name,
+                    error = %e,
+                    response = %response_text.chars().take(200).collect::<String>(),
+                    "Upload succeeded but couldn't parse response"
+                );
+                Ok(UploadedFile {
+                    id: String::new(),
+                    name: display_name.to_string(),
+                    cid: "unknown".to_string(),
+                    size: 0,
+                    is_duplicate: false,
+                })
+            }
+        }
+    }
+
+    /// Upload multiple files to Pinata with progress reporting.
+    ///
+    /// # Arguments
+    /// * `files` - Slice of (path, name) pairs to upload
+    /// * `group_id` - Optional group ID to add files to
+    /// * `on_progress` - Optional callback called with (completed, total, uploaded, duplicates, failed)
+    ///
+    /// # Returns
+    /// Vector of results for each file (Ok with UploadedFile or Err with error message).
+    pub async fn upload_files(
+        &self,
+        files: &[(std::path::PathBuf, String)],
+        group_id: Option<&str>,
+        on_progress: Option<Box<dyn Fn(usize, usize, usize, usize, usize) + Send + Sync>>,
+    ) -> Vec<Result<UploadedFile, String>> {
+        let total = files.len();
+        let mut results = Vec::with_capacity(total);
+        let mut uploaded = 0usize;
+        let mut duplicates = 0usize;
+        let mut failed = 0usize;
+
+        for (i, (path, name)) in files.iter().enumerate() {
+            let result = self.upload_file(path, Some(name), group_id).await;
+
+            match &result {
+                Ok(uploaded_file) => {
+                    if uploaded_file.is_duplicate {
+                        duplicates += 1;
+                    } else {
+                        uploaded += 1;
+                    }
+                    results.push(Ok(uploaded_file.clone()));
+                }
+                Err(e) => {
+                    failed += 1;
+                    results.push(Err(format!("{}: {}", path.display(), e)));
+                }
+            }
+
+            if let Some(ref callback) = on_progress {
+                callback(i + 1, total, uploaded, duplicates, failed);
+            }
+        }
+
+        results
+    }
     /// Ensure all CIDs are pinned to a group.
     ///
     /// Takes a slice of (name, cid) pairs. The name is used for display in Pinata's UI.
@@ -464,7 +764,9 @@ impl PinataClient {
         }
 
         // Get existing files in group
+        eprint!("  Fetching files already in group...");
         let existing_files = self.list_files_in_group(group_id).await?;
+        eprintln!(" {} files", existing_files.len());
         info!(
             "Group {} has {} files already",
             group_id,
@@ -475,7 +777,9 @@ impl PinataClient {
             existing_files.iter().map(|f| f.cid.as_str()).collect();
 
         // Get ungrouped files - these are pinned but not in any group yet
+        eprint!("  Fetching ungrouped files...");
         let ungrouped_files = self.list_ungrouped_files().await?;
+        eprintln!(" {} files", ungrouped_files.len());
         info!(
             "Account has {} ungrouped pinned files",
             ungrouped_files.len()
@@ -501,19 +805,14 @@ impl PinataClient {
             backfilled_count
         );
 
-        // If there are backfilled items OR we're near the 250 active limit, wait for capacity
-        // Threshold: wait if active >= 100 or any backfilled
-        const QUEUE_PAUSE_THRESHOLD: usize = 100;
-        let should_wait = backfilled_count > 0 || active_count >= QUEUE_PAUSE_THRESHOLD;
+        // If there are backfilled items OR we're near the active limit, wait for capacity
+        let should_wait = backfilled_count > 0 || active_count >= PIN_QUEUE_CAPACITY;
 
         if should_wait {
             let reason = if backfilled_count > 0 {
                 format!("{} backfilled", backfilled_count)
             } else {
-                format!(
-                    "{} active (threshold {})",
-                    active_count, QUEUE_PAUSE_THRESHOLD
-                )
+                format!("{} active (threshold {})", active_count, PIN_QUEUE_CAPACITY)
             };
             info!(
                 "Pin queue is busy ({}). Waiting for queue to drain before adding more...",
@@ -548,7 +847,7 @@ impl PinataClient {
                 );
 
                 // Resume when backfilled is 0 AND active is below threshold
-                if current_backfilled == 0 && current_active < QUEUE_PAUSE_THRESHOLD {
+                if current_backfilled == 0 && current_active < PIN_QUEUE_CAPACITY {
                     info!(
                         "Queue has capacity ({} active), resuming...",
                         current_active
@@ -608,9 +907,7 @@ impl PinataClient {
             return Ok(0);
         }
 
-        // Rate limit: 180 requests/minute = 3 requests/second
-        // Use 2.5/sec to have some buffer
-        let delay = Duration::from_millis(400);
+        let delay = API_RATE_LIMIT_DELAY;
         let mut pinned = 0;
         let mut added_to_group = 0;
         let mut failed = 0;
@@ -710,8 +1007,6 @@ impl PinataClient {
         info!("Cancelling {} backfilled pin requests", to_cancel.len());
 
         let mut cancelled = 0;
-        let delay = Duration::from_millis(400); // Rate limit
-
         for (i, job) in to_cancel.iter().enumerate() {
             match self.cancel_pin_request(&job.id).await {
                 Ok(()) => {
@@ -728,7 +1023,7 @@ impl PinataClient {
             }
 
             if i + 1 < to_cancel.len() {
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep(API_RATE_LIMIT_DELAY).await;
             }
         }
 
@@ -736,44 +1031,83 @@ impl PinataClient {
         Ok(cancelled)
     }
 
-    /// Check if pin queue has more than 100 pending requests.
-    /// Returns true if next_page_token is present on first page of 100.
-    async fn is_pin_queue_full(&self) -> Result<bool, PinataError> {
-        let url = format!("{}/files/public/pin_by_cid?limit=100", PINATA_API_BASE);
+    /// Cancel ALL pending pin requests (all statuses).
+    /// Use this to completely clear the pin queue.
+    pub async fn cancel_all_pins(&self) -> Result<usize, PinataError> {
+        let jobs = self.query_pin_requests(None).await?;
 
-        let response = self
-            .send_with_retry(self.client.get(&url).bearer_auth(&self.jwt))
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let message = response.text().await.unwrap_or_default();
-            return Err(PinataError::Api { status, message });
+        if jobs.is_empty() {
+            info!("No pending pin requests to cancel");
+            return Ok(0);
         }
 
-        let text = response.text().await?;
-        let result: PinRequestsResponse = serde_json::from_str(&text)
-            .map_err(|e| PinataError::InvalidResponse(format!("Failed to parse: {}", e)))?;
+        info!("Cancelling {} pin requests (all statuses)", jobs.len());
 
-        // If there's a next_page_token, there are more than 100 pending
-        Ok(result.data.next_page_token.is_some())
+        let mut cancelled = 0;
+        let mut failed = 0;
+
+        for (i, job) in jobs.iter().enumerate() {
+            match self.cancel_pin_request(&job.id).await {
+                Ok(()) => {
+                    cancelled += 1;
+                    debug!(
+                        "Cancelled pin request {} ({}) [{}]",
+                        job.id,
+                        job.name.as_deref().unwrap_or("?"),
+                        job.status
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to cancel pin request {}: {}", job.id, e);
+                    failed += 1;
+                }
+            }
+
+            if i + 1 < jobs.len() {
+                tokio::time::sleep(API_RATE_LIMIT_DELAY).await;
+            }
+        }
+
+        info!("Cancelled {} pin requests ({} failed)", cancelled, failed);
+        Ok(cancelled)
     }
 
-    /// Wait for pin queue to have capacity (<100 pending requests).
+    /// Check if pin queue has more than PIN_QUEUE_CAPACITY pending requests.
+    async fn is_pin_queue_full(&self) -> Result<bool, PinataError> {
+        let jobs = self.query_pin_requests(None).await?;
+        info!(
+            "is_pin_queue_full: {} jobs (capacity: {})",
+            jobs.len(),
+            PIN_QUEUE_CAPACITY
+        );
+        Ok(jobs.len() >= PIN_QUEUE_CAPACITY)
+    }
+
+    /// Wait for pin queue to have capacity (<PIN_QUEUE_CAPACITY pending requests).
     async fn wait_for_queue_capacity(&self) -> Result<(), PinataError> {
         let poll_interval = Duration::from_secs(30);
 
         loop {
             tokio::time::sleep(poll_interval).await;
 
-            let is_full = self.is_pin_queue_full().await?;
+            let jobs = self.query_pin_requests(None).await?;
+            info!("Queue check: {} pending jobs", jobs.len());
 
-            if is_full {
-                eprint!("\r  Waiting for queue capacity...    ");
-            } else {
-                eprintln!("\r  Queue has capacity, resuming...    ");
-                info!("Pin queue has capacity, resuming...");
+            if jobs.len() < PIN_QUEUE_CAPACITY {
+                eprintln!(
+                    "\r  Queue has capacity ({} pending), resuming...    ",
+                    jobs.len()
+                );
+                info!(
+                    "Pin queue has capacity ({} pending), resuming...",
+                    jobs.len()
+                );
                 break;
+            } else {
+                eprint!(
+                    "\r  Waiting for queue capacity ({} pending)...    ",
+                    jobs.len()
+                );
             }
         }
 
@@ -782,8 +1116,15 @@ impl PinataClient {
 
     /// Fetch a thumbnail image from Pinata with optimization.
     ///
-    /// Returns PNG bytes at the specified size.
-    pub async fn fetch_thumbnail(&self, cid: &str, size: u32) -> Result<Vec<u8>, PinataError> {
+    /// Returns image bytes at the specified size. The format may vary based on the
+    /// source image - Pinata may not always convert formats successfully.
+    /// Returns (bytes, extension) where extension is "png", "webp", "jpg", or "gif".
+    pub async fn fetch_thumbnail(
+        &self,
+        cid: &str,
+        size: u32,
+    ) -> Result<(Vec<u8>, &'static str), PinataError> {
+        // Request PNG but accept whatever we get back
         let url = self.image_url(cid, size, "png").ok_or_else(|| {
             PinataError::InvalidResponse("No gateway host configured".to_string())
         })?;
@@ -800,14 +1141,22 @@ impl PinataClient {
 
         let bytes = response.bytes().await?;
 
-        // Validate it's a PNG
-        if !bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        // Detect format from magic bytes
+        let ext = if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+            "png"
+        } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            "jpg"
+        } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+            "webp"
+        } else if bytes.starts_with(&[0x47, 0x49, 0x46, 0x38]) {
+            "gif"
+        } else {
             return Err(PinataError::InvalidResponse(
-                "Response is not a PNG image".to_string(),
+                "Response is not a recognized image format".to_string(),
             ));
-        }
+        };
 
-        Ok(bytes.to_vec())
+        Ok((bytes.to_vec(), ext))
     }
 
     /// Query pin requests (jobs in the pinning queue).
@@ -847,15 +1196,17 @@ impl PinataClient {
             let result: PinRequestsResponse = serde_json::from_str(&text).map_err(|e| {
                 PinataError::InvalidResponse(format!("Failed to parse pin requests: {}", e))
             })?;
+            let jobs_in_page = result.data.jobs.len();
             debug!(
                 "Pin requests page: {} jobs, next_page_token: {:?}",
-                result.data.jobs.len(),
-                result.data.next_page_token
+                jobs_in_page, result.data.next_page_token
             );
             all_jobs.extend(result.data.jobs);
 
+            // Only continue pagination if we got results
+            // Pinata sometimes returns next_page_token even with empty results
             match result.data.next_page_token {
-                Some(token) if !token.is_empty() => page_token = Some(token),
+                Some(token) if !token.is_empty() && jobs_in_page > 0 => page_token = Some(token),
                 _ => break,
             }
         }

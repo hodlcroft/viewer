@@ -313,6 +313,11 @@ impl ImageSourceConfig {
     pub fn is_iiif(&self) -> bool {
         self.source == "iiif"
     }
+
+    /// Check if using NFTCDN source.
+    pub fn is_nftcdn(&self) -> bool {
+        self.source == "nftcdn"
+    }
 }
 
 /// Trait processing configuration.

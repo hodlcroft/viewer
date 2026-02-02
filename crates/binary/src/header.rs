@@ -62,8 +62,11 @@ pub struct Header {
     /// String reference size enum (0 = u16, 1 = u32)
     pub string_ref_size: u8,
 
+    /// Collection display name (string reference, 0 = use slug)
+    pub name_ref: u16,
+
     /// Reserved for future use (must be zero)
-    pub reserved: [u8; 71],
+    pub reserved: [u8; 69],
 }
 
 impl Header {
@@ -119,7 +122,18 @@ impl Header {
             sources_offset: 0,
             asset_id_index_offset: 0,
             string_ref_size: string_ref_size as u8,
-            reserved: [0u8; 71],
+            name_ref: 0,
+            reserved: [0u8; 69],
+        }
+    }
+
+    /// Get the collection display name string reference.
+    /// Returns None if name_ref is 0 (use slug instead).
+    pub fn name_ref(&self) -> Option<crate::StringRef> {
+        if self.name_ref == 0 {
+            None
+        } else {
+            Some(crate::StringRef(self.name_ref as u32))
         }
     }
 
@@ -171,15 +185,16 @@ impl Header {
         buf[48..52].copy_from_slice(&self.sources_offset.to_le_bytes());
         buf[52..56].copy_from_slice(&self.asset_id_index_offset.to_le_bytes());
         buf[56] = self.string_ref_size;
-        // buf[57..128] reserved (already zero)
+        buf[57..59].copy_from_slice(&self.name_ref.to_le_bytes());
+        // buf[59..128] reserved (already zero)
 
         buf
     }
 
     /// Deserialize header from bytes.
     pub fn from_bytes(buf: &[u8; HEADER_SIZE]) -> Self {
-        let mut reserved = [0u8; 71];
-        reserved.copy_from_slice(&buf[57..128]);
+        let mut reserved = [0u8; 69];
+        reserved.copy_from_slice(&buf[59..128]);
 
         Self {
             magic: [buf[0], buf[1], buf[2], buf[3]],
@@ -201,6 +216,7 @@ impl Header {
             sources_offset: u32::from_le_bytes([buf[48], buf[49], buf[50], buf[51]]),
             asset_id_index_offset: u32::from_le_bytes([buf[52], buf[53], buf[54], buf[55]]),
             string_ref_size: buf[56],
+            name_ref: u16::from_le_bytes([buf[57], buf[58]]),
             reserved,
         }
     }
@@ -249,11 +265,11 @@ mod tests {
         let header = Header::new(100, 5, BitmapSize::U64, HcfIndexSize::U32U16, 1);
         let bytes = header.to_bytes();
 
-        // Reserved bytes should be zero (byte 57-127)
-        assert_eq!(&bytes[57..128], &[0u8; 71]);
+        // Reserved bytes should be zero (byte 59-127)
+        assert_eq!(&bytes[59..128], &[0u8; 69]);
 
         let parsed = Header::from_bytes(&bytes);
-        assert_eq!(parsed.reserved, [0u8; 71]);
+        assert_eq!(parsed.reserved, [0u8; 69]);
     }
 
     #[test]
