@@ -1557,30 +1557,39 @@ async fn cmd_pinata_clean(
     }
 
     // Delete orphaned files
-    println!("\nDeleting {} orphaned files...", orphan_files.len());
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    let pb = ProgressBar::new(orphan_files.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
     let mut deleted = 0usize;
     let mut failed = 0usize;
 
-    for (i, (id, cid, name)) in orphan_files.iter().enumerate() {
+    for (id, _cid, name) in &orphan_files {
         let display_name = name.as_deref().unwrap_or("(unnamed)");
+        pb.set_message(display_name.to_string());
+
         match pinata.delete_file(id).await {
             Ok(()) => {
                 deleted += 1;
-                if deleted <= 10 || (deleted % 100 == 0) {
-                    println!("  Deleted: {} ({})", display_name, cid);
-                }
             }
             Err(e) => {
                 failed += 1;
-                println!("  Failed to delete {}: {}", display_name, e);
+                pb.suspend(|| {
+                    println!("  Failed to delete {}: {}", display_name, e);
+                });
             }
         }
 
-        // Progress every 50 files
-        if (i + 1) % 50 == 0 {
-            println!("  Progress: {}/{}", i + 1, orphan_files.len());
-        }
+        pb.inc(1);
     }
+
+    pb.finish_and_clear();
 
     println!("\nClean complete:");
     println!("  Deleted: {}", deleted);
