@@ -1,5 +1,7 @@
 # NFT Collection Viewer
 
+[![PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
+
 A high-performance viewer for NFT collections, optimized for fast loading of 10K+ token collections with trait filtering, rarity rankings, and efficient image delivery via range requests.
 
 ## Features
@@ -496,4 +498,8 @@ ignore = ["Serial Number", "Unique ID"]
 
 ## License
 
-MIT OR Apache-2.0
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/).
+
+[![PolyForm Noncommercial](https://polyformproject.org/wp-content/uploads/2019/10/Polyform-Noncommercial-1@2x.png)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
+
+You are free to use, modify, and distribute this software for any noncommercial purpose, including personal projects, research, education, and use by charitable organizations. Commercial use requires a separate license agreement.
