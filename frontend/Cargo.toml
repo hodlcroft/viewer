@@ -60,3 +60,6 @@ tracing = "0.1"
 # URL encoding
 urlencoding = "2"
 base64 = "0.22.1"
+
+# Rarity scoring
+asset-rarity = { path = "/Users/damo/code/defrag/shared-crates/asset-rarity" }

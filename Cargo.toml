@@ -68,13 +68,15 @@ gloo-timers = "0.3"
 js-sys = "0.3"
 
 # shared-crates (all pinned to same rev)
-worker_utils = { git = "https://github.com/defrag-au/shared-crates", package = "worker_utils", rev = "f750432" }
-worker_stack = { git = "https://github.com/defrag-au/shared-crates", package = "worker_stack", rev = "f750432" }
-test_utils = { git = "https://github.com/defrag-au/shared-crates", package = "test_utils", rev = "f750432" }
-cnft_tools = { git = "https://github.com/defrag-au/shared-crates", package = "cnft_tools", rev = "f750432" }
-cardano-assets = { git = "https://github.com/defrag-au/shared-crates", rev = "f750432" }
+worker_utils = { git = "https://github.com/defrag-au/shared-crates", package = "worker_utils", rev = "b913d91491b7aa9a112f488c2f20d682b1ba40b1" }
+worker_stack = { git = "https://github.com/defrag-au/shared-crates", package = "worker_stack", rev = "b913d91491b7aa9a112f488c2f20d682b1ba40b1" }
+test_utils = { git = "https://github.com/defrag-au/shared-crates", package = "test_utils", rev = "b913d91491b7aa9a112f488c2f20d682b1ba40b1" }
+cnft_tools = { git = "https://github.com/defrag-au/shared-crates", package = "cnft_tools", rev = "b913d91491b7aa9a112f488c2f20d682b1ba40b1" }
+cardano-assets = { git = "https://github.com/defrag-au/shared-crates", rev = "b913d91491b7aa9a112f488c2f20d682b1ba40b1" }
+asset-rarity = { git = "https://github.com/defrag-au/shared-crates", rev = "b913d91491b7aa9a112f488c2f20d682b1ba40b1" }
 
 # Local overrides for development
 [patch."https://github.com/defrag-au/shared-crates"]
 # cnft_tools = { path = "/Users/damo/code/defrag/shared-crates/cnft-tools" }
-cardano-assets = { path = "/Users/damo/code/defrag/shared-crates/cardano-assets" }
+# cardano-assets = { path = "/Users/damo/code/defrag/shared-crates/cardano-assets" }
+# asset-rarity = { path = "/Users/damo/code/defrag/shared-crates/asset-rarity" }

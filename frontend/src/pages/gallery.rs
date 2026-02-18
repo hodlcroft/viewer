@@ -1,4 +1,4 @@
-use crate::{CollectionCache, InfiniteGrid, TraitInfo, fetch_collection};
+use crate::{CollectionCache, InfiniteGrid, RarityAlgorithm, TraitInfo, fetch_collection};
 use leptos::prelude::*;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use std::collections::HashMap;
@@ -103,8 +103,8 @@ impl SortContext {
         self.order.set(order);
     }
 
-    /// Update the sorted token list based on current sort order
-    pub fn update_tokens(&self, tokens: &[TokenInfo]) {
+    /// Update the sorted token list based on current sort order and rarity algorithm
+    pub fn update_tokens(&self, tokens: &[TokenInfo], algo: RarityAlgorithm) {
         let order = self.order.get();
         let mut sorted: Vec<_> = tokens.iter().collect();
 
@@ -113,7 +113,7 @@ impl SortContext {
                 // Already in default order (by index)
             }
             SortOrder::Rank => {
-                sorted.sort_by_key(|t| t.rarity_rank);
+                sorted.sort_by_key(|t| t.rank_for(algo));
             }
         }
 
@@ -295,10 +295,14 @@ pub fn GalleryPage() -> impl IntoView {
                                 // Store collection for filtering
                                 let collection = StoredValue::new(collection);
 
+                                // Get rarity algorithm signal
+                                let rarity_algo = expect_context::<RwSignal<RarityAlgorithm>>();
+
                                 // Derive filtered and sorted tokens reactively
                                 let filtered_tokens = Signal::derive(move || {
                                     let filters = filter_ctx.get_filters();
                                     let sort = sort_ctx.get();
+                                    let algo = rarity_algo.get();
                                     collection.with_value(|c| {
                                         let mut tokens: Vec<_> = if filters.is_empty() {
                                             c.tokens.clone()
@@ -317,12 +321,12 @@ pub fn GalleryPage() -> impl IntoView {
                                                 // Already in default order (by index)
                                             }
                                             SortOrder::Rank => {
-                                                tokens.sort_by_key(|t| t.rarity_rank);
+                                                tokens.sort_by_key(|t| t.rank_for(algo));
                                             }
                                         }
 
                                         // Update sort context with current sorted list for detail page navigation
-                                        sort_ctx.update_tokens(&tokens);
+                                        sort_ctx.update_tokens(&tokens, algo);
 
                                         tokens
                                     })
@@ -490,10 +494,28 @@ fn GalleryHeader(
                                     }
                                 }}
                             </span>
-                            // Sort dropdown (only show if rarity is available)
+                            // Rarity controls (only show if rarity is available)
                             {(!hide_rarity && sort_ctx.is_some()).then(|| {
                                 let ctx = sort_ctx.unwrap();
+                                let rarity_algo = expect_context::<RwSignal<RarityAlgorithm>>();
                                 view! {
+                                    <div class="rarity-algo-toggle">
+                                        <button
+                                            class="algo-btn"
+                                            class:active=move || rarity_algo.get() == RarityAlgorithm::Source
+                                            on:click=move |_| rarity_algo.set(RarityAlgorithm::Source)
+                                        >"Source"</button>
+                                        <button
+                                            class="algo-btn"
+                                            class:active=move || rarity_algo.get() == RarityAlgorithm::MagicEden
+                                            on:click=move |_| rarity_algo.set(RarityAlgorithm::MagicEden)
+                                        >"Statistical"</button>
+                                        <button
+                                            class="algo-btn"
+                                            class:active=move || rarity_algo.get() == RarityAlgorithm::InformationContent
+                                            on:click=move |_| rarity_algo.set(RarityAlgorithm::InformationContent)
+                                        >"IC"</button>
+                                    </div>
                                     <select
                                         class="sort-select"
                                         on:change=move |ev| {

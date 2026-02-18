@@ -162,6 +162,18 @@ pub struct TraitValueInfo {
     pub bit_index: u16,
 }
 
+/// Rarity scoring algorithm
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum RarityAlgorithm {
+    /// Rank stored in the binary (from authoritative source)
+    #[default]
+    Source,
+    /// Magic Eden statistical rarity (computed locally)
+    MagicEden,
+    /// OpenRarity information content (computed locally)
+    InformationContent,
+}
+
 /// Information about a token
 #[derive(Clone, Debug)]
 pub struct TokenInfo {
@@ -169,6 +181,9 @@ pub struct TokenInfo {
     pub name: String,
     pub asset_id: String,
     pub rarity_rank: u16,
+    pub source_rank: u16,
+    pub me_rank: u16,
+    pub ic_rank: u16,
     pub sprite_sheet: u16,
     pub sprite_x: u8,
     pub sprite_y: u8,
@@ -176,6 +191,17 @@ pub struct TokenInfo {
     pub trait_bitmap: Vec<u8>,
     /// HCF location for full image (if available)
     pub hcf_location: Option<HcfLocation>,
+}
+
+impl TokenInfo {
+    /// Get the rank for the given algorithm.
+    pub fn rank_for(&self, algo: RarityAlgorithm) -> u16 {
+        match algo {
+            RarityAlgorithm::Source => self.source_rank,
+            RarityAlgorithm::MagicEden => self.me_rank,
+            RarityAlgorithm::InformationContent => self.ic_rank,
+        }
+    }
 }
 
 impl CollectionData {
@@ -365,6 +391,9 @@ impl CollectionData {
                 name,
                 asset_id,
                 rarity_rank,
+                source_rank: rarity_rank,
+                me_rank: 0,
+                ic_rank: 0,
                 sprite_sheet,
                 sprite_x,
                 sprite_y,
@@ -372,6 +401,9 @@ impl CollectionData {
                 hcf_location,
             });
         }
+
+        // Compute rarity ranks dynamically from trait data
+        Self::recompute_rarity(&mut tokens, &traits);
 
         // Get sprite metadata from sprites.bin header, or use defaults if not available
         let (sprite_thumb_width, sprite_thumb_height, sprite_grid_columns, sprite_grid_rows, sprite_sheet_count) =
@@ -414,6 +446,54 @@ impl CollectionData {
             }
         }
         true
+    }
+
+    /// Compute rarity ranks from trait bitmaps using both scoring algorithms.
+    fn recompute_rarity(tokens: &mut [TokenInfo], traits: &[TraitInfo]) {
+        let rarity_tokens: Vec<asset_rarity::Token> = tokens
+            .iter()
+            .map(|token| {
+                let mut attributes = Vec::new();
+                for trait_info in traits {
+                    for value_info in &trait_info.values {
+                        let byte_idx = value_info.bit_index as usize / 8;
+                        let bit_idx = value_info.bit_index as usize % 8;
+                        if byte_idx < token.trait_bitmap.len()
+                            && token.trait_bitmap[byte_idx] & (1 << bit_idx) != 0
+                        {
+                            attributes.push(asset_rarity::Attribute::new(
+                                &trait_info.name,
+                                &value_info.value,
+                            ));
+                        }
+                    }
+                }
+                asset_rarity::Token::new(&token.asset_id, attributes)
+            })
+            .collect();
+
+        let me_ranked = asset_rarity::score_and_rank(&asset_rarity::MagicEdenScorer, &rarity_tokens);
+        let ic_ranked = asset_rarity::score_and_rank(&asset_rarity::ICScorer, &rarity_tokens);
+
+        let me_lookup: std::collections::HashMap<&str, u16> = me_ranked
+            .iter()
+            .map(|r| (r.id.as_str(), r.rank as u16))
+            .collect();
+        let ic_lookup: std::collections::HashMap<&str, u16> = ic_ranked
+            .iter()
+            .map(|r| (r.id.as_str(), r.rank as u16))
+            .collect();
+
+        for token in tokens.iter_mut() {
+            if let Some(&rank) = me_lookup.get(token.asset_id.as_str()) {
+                token.me_rank = rank;
+            }
+            if let Some(&rank) = ic_lookup.get(token.asset_id.as_str()) {
+                token.ic_rank = rank;
+            }
+            // Default rarity_rank to source (from binary)
+            token.rarity_rank = token.source_rank;
+        }
     }
 
     /// Get images per sprite sheet
@@ -642,6 +722,7 @@ pub fn App() -> impl IntoView {
 
     // Provide shared sort context (persists between navigations)
     provide_context(pages::SortContext::new());
+    provide_context(RwSignal::new(RarityAlgorithm::default()));
 
     view! {
         <Html {..} lang="en" data-bs-theme="dark"/>

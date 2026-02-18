@@ -145,6 +145,38 @@ a {
     white-space: nowrap;
 }
 
+.rarity-algo-toggle {
+    display: flex;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+
+    .algo-btn {
+        font-size: 12px;
+        padding: 4px 10px;
+        border: none;
+        background: var(--bg-secondary);
+        color: var(--text-secondary);
+        cursor: pointer;
+        transition:
+            background 0.15s,
+            color 0.15s;
+
+        &:not(:last-child) {
+            border-right: 1px solid var(--border-color);
+        }
+
+        &.active {
+            background: var(--accent-color);
+            color: #fff;
+        }
+
+        &:hover:not(.active) {
+            background: var(--bg-tertiary);
+        }
+    }
+}
+
 .sort-select {
     font-size: 13px;
     padding: 4px 8px;

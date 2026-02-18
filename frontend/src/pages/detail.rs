@@ -1,4 +1,4 @@
-use crate::{CollectionCache, HcfInfo, TokenInfo, TraitInfo, collection_url, fetch_collection, fetch_hcf_image_with_signal};
+use crate::{CollectionCache, HcfInfo, RarityAlgorithm, TokenInfo, TraitInfo, collection_url, fetch_collection, fetch_hcf_image_with_signal};
 use super::SortContext;
 use leptos::prelude::*;
 use leptos_router::components::A;
@@ -282,11 +282,17 @@ fn TokenDetail(
     // Decode traits from bitmap
     let token_traits = decode_token_traits(&token, &traits, total_count as u32);
 
-    let rarity_class = rarity_tier_class(token.rarity_rank, total_count);
-    let percentile = if total_count > 0 {
-        100.0 - (token.rarity_rank as f64 / total_count as f64 * 100.0)
-    } else {
-        0.0
+    let rarity_algo = use_context::<RwSignal<RarityAlgorithm>>();
+    let source_rank = token.source_rank;
+    let me_rank = token.me_rank;
+    let ic_rank = token.ic_rank;
+    let active_rank = move || {
+        let algo = rarity_algo.map(|s| s.get()).unwrap_or_default();
+        match algo {
+            RarityAlgorithm::Source => source_rank,
+            RarityAlgorithm::MagicEden => me_rank,
+            RarityAlgorithm::InformationContent => ic_rank,
+        }
     };
 
     // NodeRef to the main image element - we'll manipulate it directly
@@ -431,21 +437,34 @@ fn TokenDetail(
                 </div>
 
                 // Rarity (only show if we have rarity data and it's not hidden)
-                {(!hide_rarity && token.rarity_rank > 0).then(|| view! {
-                    <div class="tp-section">
-                        <div class="tp-row">
-                            <span class="tp-label">"Rank"</span>
-                            <span class={format!("tp-value tp-rank {rarity_class}")}>
-                                {format!("#{}", token.rarity_rank)}
-                            </span>
-                        </div>
-                        <div class="tp-row">
-                            <span class="tp-label">"Percentile"</span>
-                            <span class={format!("tp-value {rarity_class}")}>
-                                {format!("Top {:.1}%", 100.0 - percentile)}
-                            </span>
-                        </div>
-                    </div>
+                {(!hide_rarity).then(|| view! {
+                    {move || {
+                        let rank = active_rank();
+                        (rank > 0).then(|| {
+                            let rarity_class = rarity_tier_class(rank, total_count);
+                            let percentile = if total_count > 0 {
+                                100.0 - (rank as f64 / total_count as f64 * 100.0)
+                            } else {
+                                0.0
+                            };
+                            view! {
+                                <div class="tp-section">
+                                    <div class="tp-row">
+                                        <span class="tp-label">"Rank"</span>
+                                        <span class={format!("tp-value tp-rank {rarity_class}")}>
+                                            {format!("#{rank}")}
+                                        </span>
+                                    </div>
+                                    <div class="tp-row">
+                                        <span class="tp-label">"Percentile"</span>
+                                        <span class={format!("tp-value {rarity_class}")}>
+                                            {format!("Top {:.1}%", 100.0 - percentile)}
+                                        </span>
+                                    </div>
+                                </div>
+                            }
+                        })
+                    }}
                 })}
 
                 // Attributes

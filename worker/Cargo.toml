@@ -12,8 +12,8 @@ crate-type = ["cdylib"]
 viewer-format = { path = "../crates/format" }
 viewer-binary = { path = "../crates/binary" }
 
-# Cloudflare Workers (via worker_stack)
-worker = "*"
+# Cloudflare Workers (via worker_stack facade)
+worker = "=0.7.4"
 worker_stack = { workspace = true }
 worker_utils = { workspace = true }
 
