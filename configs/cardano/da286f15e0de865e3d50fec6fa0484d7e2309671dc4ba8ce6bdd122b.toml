@@ -1,0 +1,19 @@
+slug = "omen"
+name = "OMEN"
+
+[pinata]
+enabled = true
+group_id = "491e5d46-0d1a-4428-b93d-abd324a26fd8"
+
+[images]
+# source = "ipfs"
+# gateways = ["dweb", "pinata"]
+# source = "nftcdn"
+source = "pinata"
+
+[traits]
+ignore = []
+
+[rarity]
+hide = true
+exclude = []
