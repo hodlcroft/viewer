@@ -1,4 +1,4 @@
-use crate::{collection_url, CollectionConfig, TokenInfo};
+use crate::{collection_url, CollectionConfig, RarityAlgorithm, TokenInfo};
 use leptos::prelude::*;
 use leptos_router::components::A;
 
@@ -33,7 +33,11 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
     let config = use_context::<CollectionConfig>();
     let hide_rarity = config.map(|c| c.hide_rarity).unwrap_or(false);
     let total_tokens = config.map(|c| c.total_tokens).unwrap_or(0);
+    let rarity_algo = use_context::<RwSignal<RarityAlgorithm>>();
 
+    let source_rank = token.source_rank;
+    let me_rank = token.me_rank;
+    let ic_rank = token.ic_rank;
     let id = token.asset_id.clone();
     let name = token.name.clone();
     let anchor_id = format!("token-{}", token.index);
@@ -48,7 +52,14 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
         sprite_url, token.sprite_x, token.sprite_y
     );
 
-    let rank_class = rarity_class(token.rarity_rank, total_tokens);
+    let active_rank = move || {
+        let algo = rarity_algo.map(|s| s.get()).unwrap_or_default();
+        match algo {
+            RarityAlgorithm::Source => source_rank,
+            RarityAlgorithm::MagicEden => me_rank,
+            RarityAlgorithm::InformationContent => ic_rank,
+        }
+    };
 
     view! {
         <A href=detail_url attr:class="nft-card" attr:id=anchor_id>
@@ -59,14 +70,18 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
                     role="img"
                     aria-label=format!("NFT {name}")
                 ></div>
-                {(!hide_rarity && token.rarity_rank > 0).then(|| {
-                    let formatted = format_rank(token.rarity_rank, total_tokens);
-                    view! {
-                        <span class={format!("rank-badge {rank_class}")}>
-                            {formatted}
-                        </span>
-                    }
-                })}
+                {move || {
+                    let rank = active_rank();
+                    (!hide_rarity && rank > 0).then(|| {
+                        let rank_class = rarity_class(rank, total_tokens);
+                        let formatted = format_rank(rank, total_tokens);
+                        view! {
+                            <span class={format!("rank-badge {rank_class}")}>
+                                {formatted}
+                            </span>
+                        }
+                    })
+                }}
             </div>
             <div class="nft-card-info">
                 <strong>{name}</strong>
