@@ -161,6 +161,8 @@ impl Default for SortContext {
 pub struct CollectionConfig {
     /// Whether to hide rarity rankings in the UI
     pub hide_rarity: bool,
+    /// Whether the binary includes source rarity data
+    pub has_source_rarity: bool,
     /// Total token count (for percentile calculations)
     pub total_tokens: u32,
 }
@@ -289,8 +291,17 @@ pub fn GalleryPage() -> impl IntoView {
                                 // Provide collection config context for child components
                                 provide_context(CollectionConfig {
                                     hide_rarity: collection.hide_rarity,
+                                    has_source_rarity: collection.has_source_rarity,
                                     total_tokens: collection.token_count,
                                 });
+
+                                // Default to MagicEden algorithm when no source rarity is available
+                                if !collection.has_source_rarity {
+                                    let rarity_algo = expect_context::<RwSignal<RarityAlgorithm>>();
+                                    if rarity_algo.get() == RarityAlgorithm::Source {
+                                        rarity_algo.set(RarityAlgorithm::MagicEden);
+                                    }
+                                }
 
                                 // Store collection for filtering
                                 let collection = StoredValue::new(collection);
@@ -334,7 +345,7 @@ pub fn GalleryPage() -> impl IntoView {
 
                                 let filtered_count = Signal::derive(move || filtered_tokens.get().len());
 
-                                let hide_rarity = collection.with_value(|c| c.hide_rarity);
+                                let has_source_rarity = collection.with_value(|c| c.has_source_rarity);
                                 let collection_name = collection.with_value(|c| c.name.clone());
 
                                 view! {
@@ -345,7 +356,7 @@ pub fn GalleryPage() -> impl IntoView {
                                         filtered_count=filtered_count
                                         trait_options=trait_options
                                         loading=false
-                                        hide_rarity=hide_rarity
+                                        has_source_rarity=has_source_rarity
                                         sort_ctx=sort_ctx
                                     />
                                     <div class="gallery-content">
@@ -388,7 +399,7 @@ fn GalleryHeader(
     #[prop(into)] filtered_count: Signal<usize>,
     trait_options: Vec<TraitValueOption>,
     loading: bool,
-    #[prop(optional)] hide_rarity: bool,
+    #[prop(optional)] has_source_rarity: bool,
     #[prop(optional)] sort_ctx: Option<SortContext>,
 ) -> impl IntoView {
     let filter_ctx = use_context::<FilterContext>();
@@ -494,17 +505,19 @@ fn GalleryHeader(
                                     }
                                 }}
                             </span>
-                            // Rarity controls (only show if rarity is available)
-                            {(!hide_rarity && sort_ctx.is_some()).then(|| {
+                            // Rarity controls
+                            {sort_ctx.is_some().then(|| {
                                 let ctx = sort_ctx.unwrap();
                                 let rarity_algo = expect_context::<RwSignal<RarityAlgorithm>>();
                                 view! {
                                     <div class="rarity-algo-toggle">
-                                        <button
-                                            class="algo-btn"
-                                            class:active=move || rarity_algo.get() == RarityAlgorithm::Source
-                                            on:click=move |_| rarity_algo.set(RarityAlgorithm::Source)
-                                        >"Source"</button>
+                                        {has_source_rarity.then(|| view! {
+                                            <button
+                                                class="algo-btn"
+                                                class:active=move || rarity_algo.get() == RarityAlgorithm::Source
+                                                on:click=move |_| rarity_algo.set(RarityAlgorithm::Source)
+                                            >"Source"</button>
+                                        })}
                                         <button
                                             class="algo-btn"
                                             class:active=move || rarity_algo.get() == RarityAlgorithm::MagicEden

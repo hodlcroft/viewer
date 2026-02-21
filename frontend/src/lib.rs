@@ -53,10 +53,26 @@ fn get_build_hash() -> String {
 
 use std::sync::OnceLock;
 static BUILD_HASH: OnceLock<String> = OnceLock::new();
+static CACHE_BREAKER: OnceLock<Option<String>> = OnceLock::new();
 
 /// Get cached build hash
 pub fn build_hash() -> &'static str {
     BUILD_HASH.get_or_init(get_build_hash)
+}
+
+/// Get the `cb` query parameter from the page URL (cached on first access)
+fn cache_breaker() -> Option<&'static str> {
+    CACHE_BREAKER
+        .get_or_init(|| {
+            web_sys::window()
+                .and_then(|w| w.location().search().ok())
+                .and_then(|search| {
+                    web_sys::UrlSearchParams::new_with_str(&search)
+                        .ok()
+                        .and_then(|params| params.get("cb"))
+                })
+        })
+        .as_deref()
 }
 
 /// Check if a slug is a preview collection (format: {name}-{8-char-hex})
@@ -89,7 +105,11 @@ pub fn collection_url(slug: &str, path: &str) -> String {
     let base_url = base_url_for_slug(slug);
     let base = format!("{base_url}/{slug}/{path}");
     if path.ends_with(".bin") {
-        format!("{base}?v={}", build_hash())
+        let mut url = format!("{base}?v={}", build_hash());
+        if let Some(cb) = cache_breaker() {
+            url.push_str(&format!("&cb={cb}"));
+        }
+        url
     } else {
         base
     }
@@ -133,6 +153,8 @@ pub struct CollectionData {
     pub trait_count: u8,
     /// Whether to hide rarity rankings in the UI
     pub hide_rarity: bool,
+    /// Whether the binary includes source rarity data (non-zero ranks)
+    pub has_source_rarity: bool,
     /// Sprite metadata
     pub sprite_thumb_width: u16,
     pub sprite_thumb_height: u16,
@@ -402,6 +424,9 @@ impl CollectionData {
             });
         }
 
+        // Check if any tokens have source rarity data baked into the binary
+        let has_source_rarity = tokens.iter().any(|t| t.source_rank > 0);
+
         // Compute rarity ranks dynamically from trait data
         Self::recompute_rarity(&mut tokens, &traits);
 
@@ -422,6 +447,7 @@ impl CollectionData {
             token_count: header.token_count,
             trait_count: header.trait_count,
             hide_rarity: header.hide_rarity(),
+            has_source_rarity,
             sprite_thumb_width,
             sprite_thumb_height,
             sprite_grid_columns,

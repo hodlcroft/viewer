@@ -139,6 +139,15 @@ pub fn DetailPage() -> impl IntoView {
                                     Some(token) => {
                                         let total = collection.tokens.len();
 
+                                        // Default to MagicEden algorithm when no source rarity is available
+                                        if !collection.has_source_rarity {
+                                            if let Some(rarity_algo) = use_context::<RwSignal<RarityAlgorithm>>() {
+                                                if rarity_algo.get() == RarityAlgorithm::Source {
+                                                    rarity_algo.set(RarityAlgorithm::MagicEden);
+                                                }
+                                            }
+                                        }
+
                                         view! {
                                             <TokenDetail
                                                 token=token
@@ -148,6 +157,7 @@ pub fn DetailPage() -> impl IntoView {
                                                 traits=collection.traits.clone()
                                                 hcf=collection.hcf.clone()
                                                 hide_rarity=collection.hide_rarity
+                                                has_source_rarity=collection.has_source_rarity
                                             />
                                         }.into_any()
                                     }
@@ -262,6 +272,7 @@ fn TokenDetail(
     traits: Vec<TraitInfo>,
     hcf: Option<HcfInfo>,
     hide_rarity: bool,
+    #[prop(optional)] has_source_rarity: bool,
 ) -> impl IntoView {
     let back_url = format!("/{slug}#token-{}", token.index);
 
@@ -436,36 +447,48 @@ fn TokenDetail(
                     </div>
                 </div>
 
-                // Rarity (only show if we have rarity data and it's not hidden)
-                {(!hide_rarity).then(|| view! {
-                    {move || {
-                        let rank = active_rank();
-                        (rank > 0).then(|| {
-                            let rarity_class = rarity_tier_class(rank, total_count);
-                            let percentile = if total_count > 0 {
-                                100.0 - (rank as f64 / total_count as f64 * 100.0)
-                            } else {
-                                0.0
-                            };
-                            view! {
-                                <div class="tp-section">
-                                    <div class="tp-row">
-                                        <span class="tp-label">"Rank"</span>
-                                        <span class={format!("tp-value tp-rank {rarity_class}")}>
-                                            {format!("#{rank}")}
-                                        </span>
-                                    </div>
-                                    <div class="tp-row">
-                                        <span class="tp-label">"Percentile"</span>
-                                        <span class={format!("tp-value {rarity_class}")}>
-                                            {format!("Top {:.1}%", 100.0 - percentile)}
-                                        </span>
-                                    </div>
+                // Rarity section
+                {move || {
+                    let algo = rarity_algo.map(|s| s.get()).unwrap_or_default();
+                    // Hide when using Source algorithm without source data, or when
+                    // hide_rarity is set and Source is selected
+                    let show = match algo {
+                        RarityAlgorithm::Source => has_source_rarity && !hide_rarity,
+                        _ => true,
+                    };
+                    let rank = active_rank();
+                    (show && rank > 0).then(|| {
+                        let algo_label = match algo {
+                            RarityAlgorithm::Source => "Source",
+                            RarityAlgorithm::MagicEden => "Statistical",
+                            RarityAlgorithm::InformationContent => "IC",
+                        };
+                        let rarity_class = rarity_tier_class(rank, total_count);
+                        let percentile = if total_count > 0 {
+                            100.0 - (rank as f64 / total_count as f64 * 100.0)
+                        } else {
+                            0.0
+                        };
+                        view! {
+                            <div class="tp-section">
+                                <div class="tp-row">
+                                    <span class="tp-label">"Rank"
+                                        <span class="tp-algo-label">{format!(" ({algo_label})")}</span>
+                                    </span>
+                                    <span class={format!("tp-value tp-rank {rarity_class}")}>
+                                        {format!("#{rank}")}
+                                    </span>
                                 </div>
-                            }
-                        })
-                    }}
-                })}
+                                <div class="tp-row">
+                                    <span class="tp-label">"Percentile"</span>
+                                    <span class={format!("tp-value {rarity_class}")}>
+                                        {format!("Top {:.1}%", 100.0 - percentile)}
+                                    </span>
+                                </div>
+                            </div>
+                        }
+                    })
+                }}
 
                 // Attributes
                 <div class="tp-section tp-attributes">

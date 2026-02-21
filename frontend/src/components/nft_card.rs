@@ -31,7 +31,7 @@ fn format_rank(rank: u16, total: u32) -> String {
 pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
     // Get collection config from context (provided by GalleryPage)
     let config = use_context::<CollectionConfig>();
-    let hide_rarity = config.map(|c| c.hide_rarity).unwrap_or(false);
+    let has_source_rarity = config.map(|c| c.has_source_rarity).unwrap_or(false);
     let total_tokens = config.map(|c| c.total_tokens).unwrap_or(0);
     let rarity_algo = use_context::<RwSignal<RarityAlgorithm>>();
 
@@ -71,8 +71,14 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
                     aria-label=format!("NFT {name}")
                 ></div>
                 {move || {
+                    let algo = rarity_algo.map(|s| s.get()).unwrap_or_default();
+                    // Hide rank when using Source algorithm without source data
+                    let show = match algo {
+                        RarityAlgorithm::Source => has_source_rarity && source_rank > 0,
+                        _ => true,
+                    };
                     let rank = active_rank();
-                    (!hide_rarity && rank > 0).then(|| {
+                    (show && rank > 0).then(|| {
                         let rank_class = rarity_class(rank, total_tokens);
                         let formatted = format_rank(rank, total_tokens);
                         view! {
