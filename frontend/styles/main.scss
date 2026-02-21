@@ -468,21 +468,17 @@ a {
     }
 }
 
-// Infinite grid - simple CSS grid with progressive loading
-.infinite-grid {
+// Static grid - all cards rendered upfront, CSS handles filter/sort
+.static-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
     gap: 1rem;
     padding: 1rem;
 }
 
-.infinite-grid-sentinel {
-    grid-column: 1 / -1;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    padding: 2rem;
-}
+// Filtering is handled by dynamic <style> rules injected per active filter:
+// .static-grid .nft-card:not(.b{bit_index}) { display: none; }
+// Sort order is handled similarly via #token-{index} { order: N; }
 
 // Legacy gallery grid (kept for fallback)
 .gallery-grid {

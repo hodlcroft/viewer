@@ -43,6 +43,17 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
     let anchor_id = format!("token-{}", token.index);
     let detail_url = format!("/{slug}/{id}");
 
+    // Build static CSS class string with trait bit classes (b0 b3 b7 etc.)
+    let mut card_class = String::from("nft-card");
+    for (byte_idx, &byte) in token.trait_bitmap.iter().enumerate() {
+        for bit in 0..8u8 {
+            if byte & (1 << bit) != 0 {
+                use std::fmt::Write;
+                let _ = write!(card_class, " b{}", byte_idx * 8 + bit as usize);
+            }
+        }
+    }
+
     // Sprite sheet URL (4-digit format)
     let sprite_url = collection_url(&slug, &format!("sprites/{:04}.webp", token.sprite_sheet));
 
@@ -62,7 +73,7 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
     };
 
     view! {
-        <A href=detail_url attr:class="nft-card" attr:id=anchor_id>
+        <A href=detail_url attr:class=card_class attr:id=anchor_id>
             <div class="nft-card-image">
                 <div
                     class="nft-card-sprite"
