@@ -2,6 +2,7 @@ use crate::{CollectionCache, InfiniteGrid, RarityAlgorithm, TraitInfo, fetch_col
 use leptos::prelude::*;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use std::collections::HashMap;
+use wasm_bindgen::JsValue;
 
 /// Active filters: trait_name -> value
 pub type Filters = HashMap<String, String>;
@@ -228,20 +229,46 @@ pub fn GalleryPage() -> impl IntoView {
     // Get sort context from app-level provider
     let sort_ctx = expect_context::<SortContext>();
 
-    // Parse initial filter from URL query param: ?filter=Trait:Value
+    // Parse initial filters from URL query param: ?filter=Trait:Value,Trait2:Value2
     Effect::new(move |_| {
         if let Some(filter_param) = query.read().get("filter") {
-            if let Some((trait_name, value)) = filter_param.split_once(':') {
-                // URL decode the values
-                let trait_name = urlencoding::decode(trait_name)
-                    .map(|s| s.into_owned())
-                    .unwrap_or_else(|_| trait_name.to_string());
-                let value = urlencoding::decode(value)
-                    .map(|s| s.into_owned())
-                    .unwrap_or_else(|_| value.to_string());
+            for part in filter_param.split(',') {
+                if let Some((trait_name, value)) = part.split_once(':') {
+                    let trait_name = urlencoding::decode(trait_name)
+                        .map(|s| s.into_owned())
+                        .unwrap_or_else(|_| trait_name.to_string());
+                    let value = urlencoding::decode(value)
+                        .map(|s| s.into_owned())
+                        .unwrap_or_else(|_| value.to_string());
 
-                filter_ctx.add_filter(trait_name, value);
+                    filter_ctx.add_filter(trait_name, value);
+                }
             }
+        }
+    });
+
+    // Sync filter state to URL query params
+    Effect::new(move |_| {
+        let filters = filter_ctx.get_filters();
+        let slug = params.read().get("slug").unwrap_or_default();
+        let path = format!("/{slug}");
+        let url = if filters.is_empty() {
+            path
+        } else {
+            let filter_param: Vec<String> = filters
+                .iter()
+                .map(|(k, v)| format!("{}:{}", urlencoding::encode(k), urlencoding::encode(v)))
+                .collect();
+            format!("{path}?filter={}", filter_param.join(","))
+        };
+        if let Some(window) = web_sys::window() {
+            let _ = window.history().and_then(|h| {
+                h.replace_state_with_url(
+                    &JsValue::NULL,
+                    "",
+                    Some(&url),
+                )
+            });
         }
     });
 
