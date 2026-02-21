@@ -497,6 +497,10 @@ a {
         transform 0.2s,
         box-shadow 0.2s;
     display: block;
+    // Lazy render off-screen cards — browser skips layout/paint/image fetch
+    // until the card is near the viewport
+    content-visibility: auto;
+    contain-intrinsic-size: auto 200px auto 260px;
 
     &:hover {
         transform: translateY(-4px);
