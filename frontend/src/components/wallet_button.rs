@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use wallet_leptos::{try_use_wallet, ConnectionState, WalletProviderEnum};
+use wallet_leptos::{ConnectionState, WalletProviderEnum, try_use_wallet};
 
 /// Wallet connect/disconnect button for the gallery header.
 ///
@@ -77,16 +77,27 @@ pub fn WalletButton() -> impl IntoView {
                             </button>
                         }.into_any()
                     }
-                    ConnectionState::Connected { address, .. } => {
-                        // Truncate address for display
-                        let short_addr = if address.len() > 16 {
-                            format!("{}...{}", &address[..8], &address[address.len()-8..])
+                    ConnectionState::Connected { .. } => {
+                        // Use bech32 stake address if available, otherwise truncated hex
+                        let display_addr = wallet.stake_address.get()
+                            .unwrap_or_else(|| {
+                                wallet.address.get_untracked()
+                                    .map(|a| if a.len() > 16 {
+                                        format!("{}...{}", &a[..8], &a[a.len()-8..])
+                                    } else {
+                                        a
+                                    })
+                                    .unwrap_or_default()
+                            });
+                        let full_addr = display_addr.clone();
+                        let short_addr = if display_addr.len() > 20 {
+                            format!("{}...{}", &display_addr[..12], &display_addr[display_addr.len()-6..])
                         } else {
-                            address.clone()
+                            display_addr
                         };
                         view! {
                             <div class="wallet-connected">
-                                <span class="wallet-address" title=address>{short_addr}</span>
+                                <span class="wallet-address" title=full_addr>{short_addr}</span>
                                 <button class="wallet-btn wallet-btn-disconnect" on:click=move |_| wallet.disconnect()>
                                     "Disconnect"
                                 </button>

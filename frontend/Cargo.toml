@@ -1,7 +1,7 @@
 [package]
 name = "viewer-frontend"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition = "2024"
 description = "Leptos frontend for the NFT viewer"
 
 [lib]
@@ -9,18 +9,18 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Internal crates
-viewer-binary = { path = "../crates/binary" }
+viewer-binary.workspace = true
 
 # Leptos framework (CSR mode)
-leptos = { version = "0.8", features = ["csr"] }
-leptos_meta = "0.8"
-leptos_router = "0.8"
+leptos = { workspace = true, features = ["csr"] }
+leptos_meta.workspace = true
+leptos_router.workspace = true
 
 # UI utilities from shared-ui
-ui-core = { git = "https://github.com/defrag-au/shared-ui", rev = "24cc859" }
+ui-core.workspace = true
 
-# WebSocket + WASM
-web-sys = { version = "0.3", features = [
+# Web APIs
+web-sys = { workspace = true, features = [
     "Window",
     "Document",
     "History",
@@ -38,34 +38,34 @@ web-sys = { version = "0.3", features = [
     "BlobPropertyBag",
     "Url",
 ] }
-js-sys = "*"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
+js-sys.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
 
 # HTTP client for API calls
-gloo-net = "0.6"
+gloo-net.workspace = true
 
 # Async utilities
-futures = "0.3"
+futures.workspace = true
 
 # Timers for delayed callbacks
-gloo-timers = "0.3"
+gloo-timers.workspace = true
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 
 # Logging
-tracing = "0.1"
+tracing.workspace = true
 
 # URL encoding
-urlencoding = "2"
-base64 = "0.22.1"
+urlencoding.workspace = true
+base64.workspace = true
 
 # Rarity scoring
-asset-rarity = { path = "/Users/damo/code/defrag/shared-crates/asset-rarity" }
+asset-rarity.workspace = true
 
 # Wallet integration (Cardano CIP-30)
-wallet-leptos = { path = "/Users/damo/code/defrag/shared-crates/ui/wallet-leptos" }
-wallet-pallas = { path = "/Users/damo/code/defrag/shared-crates/ui/wallet-pallas" }
-wallet-core = { path = "/Users/damo/code/defrag/shared-crates/ui/wallet-core" }
+wallet-leptos.workspace = true
+wallet-pallas.workspace = true
+wallet-core.workspace = true
