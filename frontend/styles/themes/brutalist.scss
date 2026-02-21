@@ -230,6 +230,26 @@
         font-family: inherit;
     }
 
+    // Wallet / Owned
+    .wallet-btn {
+        border-width: 2px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-family: inherit;
+    }
+
+    .wallet-btn.wallet-btn-owned-active {
+        border-color: #ffd700;
+        color: #ffd700;
+        background: transparent;
+    }
+
+    // Owned indicator — keep icon small, don't disrupt absolute overlay
+    .nft-card.owned .nft-card-info::after {
+        width: 12px;
+        height: 12px;
+    }
+
     // Mobile panel
     @media (max-width: 600px) {
         .tp-panel {

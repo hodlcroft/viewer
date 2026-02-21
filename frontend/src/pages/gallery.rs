@@ -125,7 +125,7 @@ impl SortContext {
 
     /// Get the previous asset_id in the sorted list
     pub fn prev_id(&self, current_id: &str) -> Option<String> {
-        let ids = self.sorted_ids.get();
+        let ids = self.sorted_ids.get_untracked();
         let pos = ids.iter().position(|id| id == current_id)?;
         if pos > 0 {
             Some(ids[pos - 1].clone())
@@ -136,7 +136,7 @@ impl SortContext {
 
     /// Get the next asset_id in the sorted list
     pub fn next_id(&self, current_id: &str) -> Option<String> {
-        let ids = self.sorted_ids.get();
+        let ids = self.sorted_ids.get_untracked();
         let pos = ids.iter().position(|id| id == current_id)?;
         if pos + 1 < ids.len() {
             Some(ids[pos + 1].clone())
@@ -147,7 +147,7 @@ impl SortContext {
 
     /// Get current position and total count
     pub fn position(&self, current_id: &str) -> Option<(usize, usize)> {
-        let ids = self.sorted_ids.get();
+        let ids = self.sorted_ids.get_untracked();
         let pos = ids.iter().position(|id| id == current_id)?;
         Some((pos, ids.len()))
     }
