@@ -1061,6 +1061,19 @@ a {
     }
 }
 
+// Owned card highlight
+.nft-card.owned {
+    outline: 2px solid #ffd700;
+    outline-offset: -2px;
+}
+
+// Owned filter toggle (in gallery header)
+.wallet-btn-owned-active {
+    background: rgba(255, 215, 0, 0.15);
+    border-color: #ffd700;
+    color: #ffd700;
+}
+
 // Wallet connector
 .wallet-button-container {
     position: relative;

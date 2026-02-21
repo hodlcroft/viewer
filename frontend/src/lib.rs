@@ -200,6 +200,81 @@ pub enum RarityAlgorithm {
     InformationContent,
 }
 
+/// Chain-agnostic asset identifier used throughout the viewer.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ViewerAssetId {
+    /// Cardano native token, identified by policy_id + asset_name_hex
+    Cardano(cardano_assets::AssetId),
+    /// Generic string identifier for non-Cardano chains
+    Named(String),
+}
+
+impl ViewerAssetId {
+    /// Construct from a Cardano policy_id and asset_name_hex
+    pub fn cardano(policy_id: &str, asset_name_hex: &str) -> Self {
+        Self::Cardano(cardano_assets::AssetId::new_unchecked(
+            policy_id.to_string(),
+            asset_name_hex.to_string(),
+        ))
+    }
+}
+
+impl std::fmt::Display for ViewerAssetId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cardano(id) => write!(f, "{}", id.concatenated()),
+            Self::Named(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl PartialEq<cardano_assets::AssetId> for ViewerAssetId {
+    fn eq(&self, other: &cardano_assets::AssetId) -> bool {
+        match self {
+            Self::Cardano(id) => id == other,
+            Self::Named(_) => false,
+        }
+    }
+}
+
+/// Context for tracking which tokens the connected wallet owns.
+/// Provided at the gallery level, read by NftCard to add the `owned` CSS class.
+#[derive(Clone)]
+pub struct OwnedContext {
+    /// Policy ID for constructing ViewerAssetId from raw asset name hex
+    pub policy_id: Option<String>,
+    pub owned_ids: RwSignal<std::collections::HashSet<ViewerAssetId>>,
+}
+
+impl OwnedContext {
+    pub fn new(policy_id: Option<String>) -> Self {
+        Self {
+            policy_id,
+            owned_ids: RwSignal::new(std::collections::HashSet::new()),
+        }
+    }
+
+    /// Build a ViewerAssetId from the raw asset_id string stored in TokenInfo.
+    /// For Cardano collections (policy_id present), this is the asset name hex;
+    /// otherwise it's used as-is.
+    pub fn make_id(&self, raw_asset_id: &str) -> ViewerAssetId {
+        match &self.policy_id {
+            Some(pid) => ViewerAssetId::cardano(pid, raw_asset_id),
+            None => ViewerAssetId::Named(raw_asset_id.to_string()),
+        }
+    }
+
+    pub fn contains(&self, asset_id: &ViewerAssetId) -> bool {
+        self.owned_ids.with(|set| set.contains(asset_id))
+    }
+
+    /// Check if the raw asset_id (as stored in TokenInfo) is owned
+    pub fn is_owned(&self, raw_asset_id: &str) -> bool {
+        let id = self.make_id(raw_asset_id);
+        self.contains(&id)
+    }
+}
+
 /// Visual theme
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
@@ -222,8 +297,6 @@ impl Theme {
             _ => Theme::Default,
         }
     }
-
-
 }
 
 /// Information about a token
@@ -258,10 +331,12 @@ impl TokenInfo {
 
 impl CollectionData {
     /// Parse collection.bin and optionally sprites.bin data
-    pub fn parse(slug: String, data: Vec<u8>, sprites_data: Option<Vec<u8>>) -> Result<Self, String> {
-        use viewer_binary::{
-            HEADER_SIZE, Header, HcfMetadata, MAGIC, SpriteIndex, TraitSchema,
-        };
+    pub fn parse(
+        slug: String,
+        data: Vec<u8>,
+        sprites_data: Option<Vec<u8>>,
+    ) -> Result<Self, String> {
+        use viewer_binary::{HEADER_SIZE, HcfMetadata, Header, MAGIC, SpriteIndex, TraitSchema};
 
         if data.len() < HEADER_SIZE {
             return Err("File too small for header".to_string());
@@ -346,7 +421,8 @@ impl CollectionData {
         // Parse sources section to get chain/policy_id
         let (chain, policy_id) = if header.sources_offset > 0 && header.source_count > 0 {
             let sources_start = header.sources_offset as usize;
-            if let Some(section) = viewer_binary::SourcesSection::from_bytes(&data[sources_start..]) {
+            if let Some(section) = viewer_binary::SourcesSection::from_bytes(&data[sources_start..])
+            {
                 if let Some(source) = section.sources.first() {
                     let chain_str = read_string(string_table_data, source.chain.0);
                     let id_str = read_string(string_table_data, source.id.0);
@@ -359,8 +435,16 @@ impl CollectionData {
                         policy_id = %id_str,
                         "Parsed sources section"
                     );
-                    let chain = if chain_str.is_empty() { None } else { Some(chain_str) };
-                    let policy_id = if id_str.is_empty() { None } else { Some(id_str) };
+                    let chain = if chain_str.is_empty() {
+                        None
+                    } else {
+                        Some(chain_str)
+                    };
+                    let policy_id = if id_str.is_empty() {
+                        None
+                    } else {
+                        Some(id_str)
+                    };
                     (chain, policy_id)
                 } else {
                     (None, None)
@@ -428,7 +512,10 @@ impl CollectionData {
             // Resolve name - high bit indicates custom name vs pattern
             let name = if name_ref & viewer_binary::NAME_REF_CUSTOM_FLAG != 0 {
                 // Custom name from string table
-                read_string(string_table_data, name_ref & viewer_binary::NAME_REF_OFFSET_MASK)
+                read_string(
+                    string_table_data,
+                    name_ref & viewer_binary::NAME_REF_OFFSET_MASK,
+                )
             } else {
                 // Pattern: "#{n}" where n is the name_ref value
                 format!("#{name_ref}")
@@ -489,14 +576,25 @@ impl CollectionData {
         // Rarity ranks are computed after first paint (deferred in gallery.rs)
 
         // Get sprite metadata from sprites.bin header, or use defaults if not available
-        let (sprite_thumb_width, sprite_thumb_height, sprite_grid_columns, sprite_grid_rows, sprite_sheet_count) =
-            if let Some(ref idx) = sprite_index {
-                let h = idx.header();
-                (h.thumb_width, h.thumb_height, h.grid_columns, h.grid_rows, h.sheet_count)
-            } else {
-                // Defaults when sprites.bin not available
-                (256, 256, 4, 4, 0)
-            };
+        let (
+            sprite_thumb_width,
+            sprite_thumb_height,
+            sprite_grid_columns,
+            sprite_grid_rows,
+            sprite_sheet_count,
+        ) = if let Some(ref idx) = sprite_index {
+            let h = idx.header();
+            (
+                h.thumb_width,
+                h.thumb_height,
+                h.grid_columns,
+                h.grid_rows,
+                h.sheet_count,
+            )
+        } else {
+            // Defaults when sprites.bin not available
+            (256, 256, 4, 4, 0)
+        };
 
         Ok(CollectionData {
             slug,
@@ -562,7 +660,8 @@ impl CollectionData {
             })
             .collect();
 
-        let me_ranked = asset_rarity::score_and_rank(&asset_rarity::MagicEdenScorer, &rarity_tokens);
+        let me_ranked =
+            asset_rarity::score_and_rank(&asset_rarity::MagicEdenScorer, &rarity_tokens);
         let ic_ranked = asset_rarity::score_and_rank(&asset_rarity::ICScorer, &rarity_tokens);
 
         let me_lookup: std::collections::HashMap<&str, u16> = me_ranked
@@ -647,17 +746,18 @@ pub async fn fetch_collection(
         gloo_net::http::Request::get(&sprites_bin_url).send()
     );
 
-    let collection_response = collection_response.map_err(|e| format!("Failed to fetch collection.bin: {e}"))?;
+    let collection_response =
+        collection_response.map_err(|e| format!("Failed to fetch collection.bin: {e}"))?;
 
     if !collection_response.ok() {
-        return Err(format!("HTTP error fetching collection.bin: {}", collection_response.status()));
+        return Err(format!(
+            "HTTP error fetching collection.bin: {}",
+            collection_response.status()
+        ));
     }
 
     // sprites.bin is optional - may not exist yet during early testing
-    let sprites_available = sprites_response
-        .as_ref()
-        .map(|r| r.ok())
-        .unwrap_or(false);
+    let sprites_available = sprites_response.as_ref().map(|r| r.ok()).unwrap_or(false);
 
     let collection_bytes = collection_response
         .binary()
@@ -665,11 +765,7 @@ pub async fn fetch_collection(
         .map_err(|e| format!("Failed to read collection.bin body: {e}"))?;
 
     let sprites_bytes = if sprites_available {
-        sprites_response
-            .unwrap()
-            .binary()
-            .await
-            .ok()
+        sprites_response.unwrap().binary().await.ok()
     } else {
         None
     };
@@ -703,10 +799,7 @@ pub async fn fetch_hcf_image_with_signal(
 ) -> Result<String, String> {
     // Build the URL to the correct shard (use preview path for preview slugs)
     let base_url = base_url_for_slug(slug);
-    let shard_url = format!(
-        "{}/{}/hcf/images_{:03}.hcf",
-        base_url, slug, location.shard
-    );
+    let shard_url = format!("{}/{}/hcf/images_{:03}.hcf", base_url, slug, location.shard);
 
     // Calculate byte range (inclusive end)
     let range_start = location.offset;
@@ -726,28 +819,21 @@ pub async fn fetch_hcf_image_with_signal(
     );
 
     // Fetch with range header and optional abort signal
-    let mut request = gloo_net::http::Request::get(&shard_url)
-        .header("Range", &range_header);
+    let mut request = gloo_net::http::Request::get(&shard_url).header("Range", &range_header);
 
     if let Some(signal) = abort_signal {
         request = request.abort_signal(Some(signal));
     }
 
-    let response = request
-        .send()
-        .await
-        .map_err(|e| {
-            // Check if this was an abort
-            if e.to_string().contains("abort") {
-                return "Request aborted".to_string();
-            }
-            format!("Failed to fetch image: {e}")
-        })?;
+    let response = request.send().await.map_err(|e| {
+        // Check if this was an abort
+        if e.to_string().contains("abort") {
+            return "Request aborted".to_string();
+        }
+        format!("Failed to fetch image: {e}")
+    })?;
 
-    tracing::info!(
-        status = response.status(),
-        "HCF fetch response"
-    );
+    tracing::info!(status = response.status(), "HCF fetch response");
 
     // Should get 206 Partial Content
     if response.status() != 206 && response.status() != 200 {
@@ -762,7 +848,8 @@ pub async fn fetch_hcf_image_with_signal(
     tracing::info!(
         bytes_len = bytes.len(),
         expected_len = location.length,
-        first_bytes = format!("{:02x}{:02x}{:02x}{:02x}",
+        first_bytes = format!(
+            "{:02x}{:02x}{:02x}{:02x}",
             bytes.get(0).copied().unwrap_or(0),
             bytes.get(1).copied().unwrap_or(0),
             bytes.get(2).copied().unwrap_or(0),
@@ -813,9 +900,7 @@ fn load_theme() -> Theme {
 
 /// Persist theme to localStorage
 fn save_theme(theme: Theme) {
-    if let Some(storage) = web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
-    {
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
         let _ = storage.set_item("theme", theme.as_str());
     }
 }

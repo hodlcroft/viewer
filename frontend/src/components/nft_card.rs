@@ -1,4 +1,4 @@
-use crate::{collection_url, CollectionConfig, RarityAlgorithm, TokenInfo};
+use crate::{CollectionConfig, OwnedContext, RarityAlgorithm, TokenInfo, collection_url};
 use leptos::prelude::*;
 use leptos_router::components::A;
 
@@ -43,6 +43,10 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
     let anchor_id = format!("token-{}", token.index);
     let detail_url = format!("/{slug}/{id}");
 
+    // Check ownership via context (if provided by gallery)
+    let owned_ctx = use_context::<OwnedContext>();
+    let raw_asset_id = token.asset_id.clone();
+
     // Build static CSS class string with trait bit classes (b0 b3 b7 etc.)
     let mut card_class = String::from("nft-card");
     for (byte_idx, &byte) in token.trait_bitmap.iter().enumerate() {
@@ -72,8 +76,15 @@ pub fn NftCard(slug: String, token: TokenInfo) -> impl IntoView {
         }
     };
 
+    let is_owned = move || {
+        owned_ctx
+            .as_ref()
+            .map(|ctx| ctx.is_owned(&raw_asset_id))
+            .unwrap_or(false)
+    };
+
     view! {
-        <A href=detail_url attr:class=card_class attr:id=anchor_id>
+        <A href=detail_url attr:class=card_class attr:id=anchor_id class:owned=is_owned>
             <div class="nft-card-image">
                 <div
                     class="nft-card-sprite"

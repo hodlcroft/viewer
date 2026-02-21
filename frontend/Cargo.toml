@@ -65,6 +65,9 @@ base64.workspace = true
 # Rarity scoring
 asset-rarity.workspace = true
 
+# Cardano types
+cardano-assets.workspace = true
+
 # Wallet integration (Cardano CIP-30)
 wallet-leptos.workspace = true
 wallet-pallas.workspace = true

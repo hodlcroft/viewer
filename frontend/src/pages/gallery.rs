@@ -1,7 +1,10 @@
-use crate::{CollectionCache, CollectionData, RarityAlgorithm, StaticGrid, Theme, TraitInfo, TokenInfo, WalletButton, fetch_collection};
+use crate::{
+    CollectionCache, CollectionData, OwnedContext, RarityAlgorithm, StaticGrid, Theme, TokenInfo,
+    TraitInfo, ViewerAssetId, WalletButton, fetch_collection,
+};
 use leptos::prelude::*;
 use leptos_router::hooks::{use_params_map, use_query_map};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wasm_bindgen::JsValue;
 
 /// Active filters: trait_name -> value
@@ -116,7 +119,8 @@ impl SortContext {
             }
         }
 
-        self.sorted_ids.set(sorted.iter().map(|t| t.asset_id.clone()).collect());
+        self.sorted_ids
+            .set(sorted.iter().map(|t| t.asset_id.clone()).collect());
     }
 
     /// Get the previous asset_id in the sorted list
@@ -260,13 +264,9 @@ pub fn GalleryPage() -> impl IntoView {
             format!("{path}?filter={}", filter_param.join(","))
         };
         if let Some(window) = web_sys::window() {
-            let _ = window.history().and_then(|h| {
-                h.replace_state_with_url(
-                    &JsValue::NULL,
-                    "",
-                    Some(&url),
-                )
-            });
+            let _ = window
+                .history()
+                .and_then(|h| h.replace_state_with_url(&JsValue::NULL, "", Some(&url)));
         }
     });
 
@@ -428,13 +428,12 @@ pub fn GalleryPage() -> impl IntoView {
                                     }
                                 });
 
-                                // Wallet ownership: derive owned asset IDs from wallet balance
-                                let owned_css = if is_cardano {
-                                    // Build asset_id → token index lookup
-                                    let asset_id_to_index: HashMap<String, u32> = tokens.iter()
-                                        .map(|t| (t.asset_id.clone(), t.index))
-                                        .collect();
+                                // Wallet ownership via OwnedContext + CSS class on cards
+                                let show_owned_only = RwSignal::new(false);
+                                let owned_ctx = OwnedContext::new(policy_id.clone());
+                                provide_context(owned_ctx.clone());
 
+                                if is_cardano {
                                     // Fetch balance when wallet connects
                                     let wallet_ctx = wallet_leptos::try_use_wallet();
                                     if let Some(ref w) = wallet_ctx {
@@ -446,39 +445,39 @@ pub fn GalleryPage() -> impl IntoView {
                                         });
                                     }
 
+                                    // Update owned IDs when balance changes
                                     let pid = policy_id.clone();
-                                    Some(Signal::derive(move || {
-                                        let Some(ref wallet) = wallet_ctx else { return String::new() };
-                                        let Some(balance) = wallet.balance.get() else { return String::new() };
-                                        let Some(ref pid) = pid else { return String::new() };
-
-                                        // Find owned tokens under this policy_id
-                                        let Some(policy_assets) = balance.assets.get(pid.as_str()) else {
-                                            return String::new();
+                                    let owned_ctx2 = owned_ctx.clone();
+                                    Effect::new(move |_| {
+                                        let Some(ref wallet) = wallet_ctx else { return };
+                                        let Some(balance) = wallet.balance.get() else {
+                                            owned_ctx2.owned_ids.set(HashSet::new());
+                                            return;
                                         };
+                                        let Some(ref pid) = pid else { return };
 
-                                        let mut css = String::new();
-                                        let mut selectors = Vec::new();
-                                        for asset_name_hex in policy_assets.keys() {
-                                            let full_id = format!("{pid}{asset_name_hex}");
-                                            if let Some(&idx) = asset_id_to_index.get(&full_id) {
-                                                selectors.push(format!("#token-{idx}"));
-                                            }
-                                        }
+                                        let ids: HashSet<ViewerAssetId> = balance
+                                            .asset_ids_for_policy(pid)
+                                            .into_iter()
+                                            .map(ViewerAssetId::Cardano)
+                                            .collect();
+                                        tracing::info!(
+                                            policy_id = %pid,
+                                            owned_count = ids.len(),
+                                            "Updated owned asset IDs"
+                                        );
+                                        owned_ctx2.owned_ids.set(ids);
+                                    });
+                                }
 
-                                        if !selectors.is_empty() {
-                                            use std::fmt::Write;
-                                            let _ = write!(
-                                                css,
-                                                "{} {{ outline: 2px solid #ffd700; outline-offset: -2px; }}",
-                                                selectors.join(", ")
-                                            );
-                                        }
-                                        css
-                                    }))
-                                } else {
-                                    None
-                                };
+                                // Single CSS rule for owned-only filter
+                                let owned_filter_css = Signal::derive(move || {
+                                    if show_owned_only.get() {
+                                        ".static-grid .nft-card:not(.owned) { display: none; }".to_string()
+                                    } else {
+                                        String::new()
+                                    }
+                                });
 
                                 view! {
                                     <GalleryHeader
@@ -491,28 +490,16 @@ pub fn GalleryPage() -> impl IntoView {
                                         has_source_rarity=has_source_rarity
                                         sort_ctx=sort_ctx
                                         is_cardano=is_cardano
+                                        show_owned_only=show_owned_only
                                     />
                                     <div class="gallery-content">
-                                        {if let Some(owned_css) = owned_css {
-                                            view! {
-                                                <StaticGrid
-                                                    slug=s.clone()
-                                                    tokens=tokens
-                                                    filter_css=filter_css
-                                                    sort_css=sort_css
-                                                    owned_css=owned_css
-                                                />
-                                            }.into_any()
-                                        } else {
-                                            view! {
-                                                <StaticGrid
-                                                    slug=s.clone()
-                                                    tokens=tokens
-                                                    filter_css=filter_css
-                                                    sort_css=sort_css
-                                                />
-                                            }.into_any()
-                                        }}
+                                        <StaticGrid
+                                            slug=s.clone()
+                                            tokens=tokens
+                                            filter_css=filter_css
+                                            sort_css=sort_css
+                                            owned_filter_css=owned_filter_css
+                                        />
                                     </div>
                                 }.into_any()
                             }
@@ -551,6 +538,7 @@ fn GalleryHeader(
     #[prop(optional)] has_source_rarity: bool,
     #[prop(optional)] sort_ctx: Option<SortContext>,
     #[prop(optional)] is_cardano: bool,
+    #[prop(optional)] show_owned_only: Option<RwSignal<bool>>,
 ) -> impl IntoView {
     let filter_ctx = use_context::<FilterContext>();
 
@@ -710,6 +698,22 @@ fn GalleryHeader(
                                     </select>
                                 }
                             }}
+                            {show_owned_only.map(|owned_sig| {
+                                let wallet = wallet_leptos::try_use_wallet();
+                                view! {
+                                    <Show when=move || {
+                                        wallet.as_ref().map(|w| w.balance.get().is_some()).unwrap_or(false)
+                                    }>
+                                        <button
+                                            class="wallet-btn"
+                                            class:wallet-btn-owned-active=move || owned_sig.get()
+                                            on:click=move |_| owned_sig.update(|v| *v = !*v)
+                                        >
+                                            "Owned"
+                                        </button>
+                                    </Show>
+                                }
+                            })}
                             {is_cardano.then(|| view! { <WalletButton /> })}
                         }.into_any()
                     }}
