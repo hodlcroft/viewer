@@ -196,6 +196,32 @@ pub enum RarityAlgorithm {
     InformationContent,
 }
 
+/// Visual theme
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum Theme {
+    #[default]
+    Default,
+    Brutalist,
+}
+
+impl Theme {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Theme::Default => "dark",
+            Theme::Brutalist => "brutalist",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "brutalist" => Theme::Brutalist,
+            _ => Theme::Default,
+        }
+    }
+
+
+}
+
 /// Information about a token
 #[derive(Clone, Debug)]
 pub struct TokenInfo {
@@ -738,6 +764,33 @@ pub fn main() {
     leptos::mount::mount_to_body(App);
 }
 
+/// Load theme from localStorage, falling back to default
+fn load_theme() -> Theme {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item("theme").ok().flatten())
+        .map(|v| Theme::from_str(&v))
+        .unwrap_or_default()
+}
+
+/// Persist theme to localStorage
+fn save_theme(theme: Theme) {
+    if let Some(storage) = web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+    {
+        let _ = storage.set_item("theme", theme.as_str());
+    }
+}
+
+/// Apply data-theme attribute to the document root element
+fn apply_theme(theme: Theme) {
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        if let Some(el) = doc.document_element() {
+            let _ = el.set_attribute("data-theme", theme.as_str());
+        }
+    }
+}
+
 /// Main application component
 #[component]
 pub fn App() -> impl IntoView {
@@ -749,6 +802,20 @@ pub fn App() -> impl IntoView {
     // Provide shared sort context (persists between navigations)
     provide_context(pages::SortContext::new());
     provide_context(RwSignal::new(RarityAlgorithm::default()));
+
+    // Theme: load from localStorage, apply to DOM, persist on change
+    let theme = RwSignal::new(load_theme());
+    provide_context(theme);
+
+    // Apply theme on initial load
+    apply_theme(theme.get_untracked());
+
+    // React to theme changes: update DOM + localStorage
+    Effect::new(move |_| {
+        let t = theme.get();
+        apply_theme(t);
+        save_theme(t);
+    });
 
     view! {
         <Html {..} lang="en" data-bs-theme="dark"/>

@@ -232,6 +232,21 @@ a {
     }
 }
 
+.theme-toggle {
+    font-size: 13px;
+    padding: 4px 8px;
+    border-radius: var(--badge-radius);
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+
+    &:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+}
+
 .spinner-small {
     width: 16px;
     height: 16px;
@@ -1008,3 +1023,6 @@ a {
         color: var(--text-secondary);
     }
 }
+
+// Theme imports
+@import "themes/brutalist";

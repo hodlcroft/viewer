@@ -1,0 +1,245 @@
+// Brutalist Theme
+// Harsh, monochrome, no-nonsense. Zero border radius, tight grid,
+// monospace type, solid borders, no shadows or glass effects.
+
+[data-theme="brutalist"] {
+    // Harsh monochrome palette
+    --bg-primary: #000000;
+    --bg-secondary: #000000;
+    --bg-tertiary: #1a1a1a;
+
+    --text-primary: #ffffff;
+    --text-secondary: #aaaaaa;
+    --text-muted: #666666;
+
+    --accent: #ffffff;
+    --accent-hover: #cccccc;
+
+    --border: #ffffff;
+    --success: #00ff00;
+    --error: #ff0000;
+
+    // Monochrome rarity tiers
+    --rarity-legendary: #ffffff;
+    --rarity-epic: #cccccc;
+    --rarity-rare: #aaaaaa;
+    --rarity-uncommon: #888888;
+    --rarity-common: #666666;
+
+    // No glass — solid opaque surfaces
+    --glass-bg: #000000;
+    --glass-bg-heavy: #000000;
+    --glass-border: #ffffff;
+    --glass-border-subtle: #333333;
+    --glass-highlight: #111111;
+    --glass-highlight-hover: #222222;
+    --glass-highlight-active: #333333;
+    --glass-highlight-strong: #444444;
+    --glass-highlight-intense: #555555;
+
+    // No shadows
+    --shadow-sm: none;
+    --shadow-md: none;
+    --shadow-lg: none;
+
+    // No rounding
+    --card-radius: 0;
+    --badge-radius: 0;
+    --panel-radius: 0;
+
+    --badge-bg: #000000;
+    --chip-bg: #1a1a1a;
+    --chip-border: #ffffff;
+    --focus-border: #ffffff;
+    --pct-bg: #1a1a1a;
+}
+
+// Structural overrides
+[data-theme="brutalist"] {
+    body,
+    .gallery-header {
+        font-family:
+            "SF Mono", "Fira Code", "Cascadia Code", Menlo, Monaco,
+            "Courier New", monospace;
+    }
+
+    // Remove all blur effects
+    .gallery-header {
+        backdrop-filter: none;
+        border-bottom-width: 2px;
+    }
+
+    .tp-panel {
+        backdrop-filter: none;
+        border: 2px solid var(--border);
+    }
+
+    .rank-badge {
+        backdrop-filter: none;
+    }
+
+    // Tighter grid with minimal gaps
+    .infinite-grid {
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 2px;
+        padding: 2px;
+    }
+
+    .gallery-grid {
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 2px;
+        padding: 2px;
+    }
+
+    // Card: harsh border, name overlaid on image
+    .nft-card {
+        position: relative;
+        border: 1px solid var(--border);
+        transition: none;
+
+        &:hover {
+            transform: none;
+            border-color: var(--accent);
+            outline: 1px solid var(--accent);
+        }
+
+        .nft-card-info {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 4px 6px;
+            background: rgba(0, 0, 0, 0.8);
+            border-top: 1px solid var(--border);
+
+            strong {
+                font-size: 11px;
+                font-weight: 400;
+                font-family: inherit;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+        }
+
+        .rank-badge {
+            border: 1px solid var(--border);
+            font-family: inherit;
+        }
+    }
+
+    // Header
+    .gallery-title {
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-size: 14px;
+    }
+
+    .gallery-count {
+        font-family: inherit;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-size: 11px;
+    }
+
+    // Filter chips
+    .filter-chip {
+        border-width: 1px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    // Search: underline style
+    .search-input {
+        border: none;
+        border-bottom: 2px solid var(--border);
+        background: transparent;
+        padding: 6px 0;
+        font-family: inherit;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+
+        &:focus {
+            background: transparent;
+            border-color: var(--accent);
+        }
+
+        &::placeholder {
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+    }
+
+    .search-suggestions {
+        border-width: 2px;
+        margin-top: 0;
+    }
+
+    // Detail panel
+    .tp-header {
+        border-bottom-width: 2px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .tp-back {
+        border: 1px solid var(--border);
+        text-transform: uppercase;
+    }
+
+    .tp-section {
+        border-bottom: 1px solid var(--glass-border-subtle);
+    }
+
+    .tp-section-title {
+        letter-spacing: 1px;
+    }
+
+    .tp-nav-btn {
+        border: 1px solid var(--border);
+    }
+
+    .tp-pct {
+        border: 1px solid var(--glass-border-subtle);
+        background: transparent;
+    }
+
+    // Algo toggle
+    .rarity-algo-toggle {
+        border-width: 2px;
+
+        .algo-btn {
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-family: inherit;
+
+            &:not(:last-child) {
+                border-right-width: 2px;
+            }
+
+            &.active {
+                background: var(--text-primary);
+                color: var(--bg-primary);
+            }
+        }
+    }
+
+    .sort-select {
+        border-width: 2px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-family: inherit;
+    }
+
+    .theme-toggle {
+        border-width: 2px;
+        font-family: inherit;
+    }
+
+    // Mobile panel
+    @media (max-width: 600px) {
+        .tp-panel {
+            border-radius: 0;
+            border-top: 2px solid var(--border);
+        }
+    }
+}

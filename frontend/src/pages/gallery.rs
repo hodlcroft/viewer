@@ -1,4 +1,4 @@
-use crate::{CollectionCache, InfiniteGrid, RarityAlgorithm, TraitInfo, fetch_collection};
+use crate::{CollectionCache, InfiniteGrid, RarityAlgorithm, Theme, TraitInfo, fetch_collection};
 use leptos::prelude::*;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use std::collections::HashMap;
@@ -572,6 +572,21 @@ fn GalleryHeader(
                                     </select>
                                 }
                             })}
+                            {move || {
+                                let theme = expect_context::<RwSignal<Theme>>();
+                                view! {
+                                    <select
+                                        class="theme-toggle"
+                                        on:change=move |ev| {
+                                            let value = event_target_value(&ev);
+                                            theme.set(Theme::from_str(&value));
+                                        }
+                                    >
+                                        <option value="dark" selected=move || theme.get() == Theme::Default>"Default"</option>
+                                        <option value="brutalist" selected=move || theme.get() == Theme::Brutalist>"Brutalist"</option>
+                                    </select>
+                                }
+                            }}
                         }.into_any()
                     }}
                 </div>
