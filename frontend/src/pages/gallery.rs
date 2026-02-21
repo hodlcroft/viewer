@@ -1,4 +1,4 @@
-use crate::{CollectionCache, CollectionData, RarityAlgorithm, StaticGrid, Theme, TraitInfo, TokenInfo, fetch_collection};
+use crate::{CollectionCache, CollectionData, RarityAlgorithm, StaticGrid, Theme, TraitInfo, TokenInfo, WalletButton, fetch_collection};
 use leptos::prelude::*;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use std::collections::HashMap;
@@ -334,6 +334,8 @@ pub fn GalleryPage() -> impl IntoView {
                                 let has_source_rarity = collection.has_source_rarity;
                                 let collection_name = collection.name.clone();
                                 let traits = collection.traits.clone();
+                                let is_cardano = collection.chain.as_deref() == Some("cardano");
+                                let policy_id = collection.policy_id.clone();
 
                                 // Compute rarity before rendering
                                 let mut tokens = collection.tokens.clone();
@@ -426,6 +428,58 @@ pub fn GalleryPage() -> impl IntoView {
                                     }
                                 });
 
+                                // Wallet ownership: derive owned asset IDs from wallet balance
+                                let owned_css = if is_cardano {
+                                    // Build asset_id → token index lookup
+                                    let asset_id_to_index: HashMap<String, u32> = tokens.iter()
+                                        .map(|t| (t.asset_id.clone(), t.index))
+                                        .collect();
+
+                                    // Fetch balance when wallet connects
+                                    let wallet_ctx = wallet_leptos::try_use_wallet();
+                                    if let Some(ref w) = wallet_ctx {
+                                        let w2 = w.clone();
+                                        Effect::new(move |_| {
+                                            if w2.is_connected() {
+                                                w2.fetch_balance();
+                                            }
+                                        });
+                                    }
+
+                                    let pid = policy_id.clone();
+                                    Some(Signal::derive(move || {
+                                        let Some(ref wallet) = wallet_ctx else { return String::new() };
+                                        let Some(balance) = wallet.balance.get() else { return String::new() };
+                                        let Some(ref pid) = pid else { return String::new() };
+
+                                        // Find owned tokens under this policy_id
+                                        let Some(policy_assets) = balance.assets.get(pid.as_str()) else {
+                                            return String::new();
+                                        };
+
+                                        let mut css = String::new();
+                                        let mut selectors = Vec::new();
+                                        for asset_name_hex in policy_assets.keys() {
+                                            let full_id = format!("{pid}{asset_name_hex}");
+                                            if let Some(&idx) = asset_id_to_index.get(&full_id) {
+                                                selectors.push(format!("#token-{idx}"));
+                                            }
+                                        }
+
+                                        if !selectors.is_empty() {
+                                            use std::fmt::Write;
+                                            let _ = write!(
+                                                css,
+                                                "{} {{ outline: 2px solid #ffd700; outline-offset: -2px; }}",
+                                                selectors.join(", ")
+                                            );
+                                        }
+                                        css
+                                    }))
+                                } else {
+                                    None
+                                };
+
                                 view! {
                                     <GalleryHeader
                                         slug=s.clone()
@@ -436,14 +490,29 @@ pub fn GalleryPage() -> impl IntoView {
                                         loading=false
                                         has_source_rarity=has_source_rarity
                                         sort_ctx=sort_ctx
+                                        is_cardano=is_cardano
                                     />
                                     <div class="gallery-content">
-                                        <StaticGrid
-                                            slug=s.clone()
-                                            tokens=tokens
-                                            filter_css=filter_css
-                                            sort_css=sort_css
-                                        />
+                                        {if let Some(owned_css) = owned_css {
+                                            view! {
+                                                <StaticGrid
+                                                    slug=s.clone()
+                                                    tokens=tokens
+                                                    filter_css=filter_css
+                                                    sort_css=sort_css
+                                                    owned_css=owned_css
+                                                />
+                                            }.into_any()
+                                        } else {
+                                            view! {
+                                                <StaticGrid
+                                                    slug=s.clone()
+                                                    tokens=tokens
+                                                    filter_css=filter_css
+                                                    sort_css=sort_css
+                                                />
+                                            }.into_any()
+                                        }}
                                     </div>
                                 }.into_any()
                             }
@@ -481,6 +550,7 @@ fn GalleryHeader(
     loading: bool,
     #[prop(optional)] has_source_rarity: bool,
     #[prop(optional)] sort_ctx: Option<SortContext>,
+    #[prop(optional)] is_cardano: bool,
 ) -> impl IntoView {
     let filter_ctx = use_context::<FilterContext>();
 
@@ -640,6 +710,7 @@ fn GalleryHeader(
                                     </select>
                                 }
                             }}
+                            {is_cardano.then(|| view! { <WalletButton /> })}
                         }.into_any()
                     }}
                 </div>

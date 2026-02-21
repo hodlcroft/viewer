@@ -163,6 +163,10 @@ pub struct CollectionData {
     pub sprite_sheet_count: u16,
     /// HCF metadata (if available)
     pub hcf: Option<HcfInfo>,
+    /// Blockchain chain name (e.g. "cardano") from sources section
+    pub chain: Option<String>,
+    /// Chain-specific collection ID (e.g. policy_id for Cardano) from sources section
+    pub policy_id: Option<String>,
     /// Trait names and values (resolved from string table)
     pub traits: Vec<TraitInfo>,
     /// Token data
@@ -339,6 +343,35 @@ impl CollectionData {
             None
         };
 
+        // Parse sources section to get chain/policy_id
+        let (chain, policy_id) = if header.sources_offset > 0 && header.source_count > 0 {
+            let sources_start = header.sources_offset as usize;
+            if let Some(section) = viewer_binary::SourcesSection::from_bytes(&data[sources_start..]) {
+                if let Some(source) = section.sources.first() {
+                    let chain_str = read_string(string_table_data, source.chain.0);
+                    let id_str = read_string(string_table_data, source.id.0);
+                    tracing::info!(
+                        sources_offset = header.sources_offset,
+                        source_count = header.source_count,
+                        chain_ref = source.chain.0,
+                        id_ref = source.id.0,
+                        chain = %chain_str,
+                        policy_id = %id_str,
+                        "Parsed sources section"
+                    );
+                    let chain = if chain_str.is_empty() { None } else { Some(chain_str) };
+                    let policy_id = if id_str.is_empty() { None } else { Some(id_str) };
+                    (chain, policy_id)
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
         // Get HCF index size for reading locations
         let hcf_index_size = header.hcf_index_size();
         let hcf_index_start = header.hcf_index_offset as usize;
@@ -479,6 +512,8 @@ impl CollectionData {
             sprite_grid_rows,
             sprite_sheet_count,
             hcf: hcf_info,
+            chain,
+            policy_id,
             traits,
             tokens,
         })
@@ -826,14 +861,16 @@ pub fn App() -> impl IntoView {
         <Meta name="description" content="View NFT collections with trait filtering"/>
         <Meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 
-        <Router>
-            <Routes fallback=|| view! { <NotFound/> }>
-                <Route path=path!("/") view=HomePage/>
-                <Route path=path!("/debug/:slug") view=DebugPage/>
-                <Route path=path!("/:slug") view=GalleryPage/>
-                <Route path=path!("/:slug/:id") view=DetailPage/>
-            </Routes>
-        </Router>
+        <wallet_leptos::WalletProvider auto_detect=true auto_reconnect=true>
+            <Router>
+                <Routes fallback=|| view! { <NotFound/> }>
+                    <Route path=path!("/") view=HomePage/>
+                    <Route path=path!("/debug/:slug") view=DebugPage/>
+                    <Route path=path!("/:slug") view=GalleryPage/>
+                    <Route path=path!("/:slug/:id") view=DetailPage/>
+                </Routes>
+            </Router>
+        </wallet_leptos::WalletProvider>
     }
 }
 

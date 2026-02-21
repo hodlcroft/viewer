@@ -64,3 +64,8 @@ base64 = "0.22.1"
 
 # Rarity scoring
 asset-rarity = { path = "/Users/damo/code/defrag/shared-crates/asset-rarity" }
+
+# Wallet integration (Cardano CIP-30)
+wallet-leptos = { path = "/Users/damo/code/defrag/shared-crates/ui/wallet-leptos" }
+wallet-pallas = { path = "/Users/damo/code/defrag/shared-crates/ui/wallet-pallas" }
+wallet-core = { path = "/Users/damo/code/defrag/shared-crates/ui/wallet-core" }

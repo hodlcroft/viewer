@@ -1061,5 +1061,130 @@ a {
     }
 }
 
+// Wallet connector
+.wallet-button-container {
+    position: relative;
+}
+
+.wallet-btn {
+    font-size: 13px;
+    padding: 4px 12px;
+    border-radius: var(--badge-radius);
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+        background 0.15s,
+        border-color 0.15s;
+
+    &:hover:not(:disabled) {
+        background: var(--bg-tertiary);
+        border-color: var(--accent);
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+}
+
+.wallet-btn-disconnect {
+    font-size: 12px;
+    padding: 2px 8px;
+    background: transparent;
+    border-color: var(--border);
+    color: var(--text-muted);
+
+    &:hover {
+        color: #ff6b6b;
+        border-color: #ff6b6b;
+    }
+}
+
+.wallet-dropdown-wrapper {
+    position: relative;
+}
+
+.wallet-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    min-width: 200px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--badge-radius);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    z-index: 100;
+    overflow: hidden;
+}
+
+.wallet-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s;
+
+    &:hover {
+        background: var(--bg-tertiary);
+    }
+
+    &:not(:last-child) {
+        border-bottom: 1px solid var(--glass-border-subtle);
+    }
+}
+
+.wallet-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+}
+
+.wallet-connected {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.wallet-address {
+    font-size: 12px;
+    font-family: monospace;
+    color: var(--text-secondary);
+    padding: 2px 6px;
+    background: var(--bg-tertiary);
+    border-radius: var(--badge-radius);
+}
+
+.wallet-error-state {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wallet-error-msg {
+    font-size: 12px;
+    color: #ff6b6b;
+}
+
+.spinner-tiny {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+
 // Theme imports
 @import "themes/brutalist";

@@ -182,6 +182,34 @@ impl CollectionWriter {
         })
     }
 
+    /// Intern the source chain/id strings into the string table and update the sources section.
+    ///
+    /// Call this before `write()` to ensure source metadata StringRefs point to
+    /// actual strings rather than placeholders.
+    pub fn intern_source_strings(
+        &mut self,
+        sources: &[(&str, &str, u32)], // (chain, id, token_count) per source
+    ) -> Result<(), WriterError> {
+        let synced_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as u32)
+            .unwrap_or(0);
+
+        let mut entries = Vec::with_capacity(sources.len());
+        for &(chain, id, token_count) in sources {
+            let chain_ref = self.strings.add(chain)?;
+            let id_ref = self.strings.add(id)?;
+            entries.push(viewer_binary::SourceMetadata {
+                chain: chain_ref,
+                id: id_ref,
+                token_count,
+                synced_at,
+            });
+        }
+        self.sources = viewer_binary::SourcesSection::new(entries);
+        Ok(())
+    }
+
     /// Add a trait definition with values.
     ///
     /// Values are provided as (name, count) pairs.
