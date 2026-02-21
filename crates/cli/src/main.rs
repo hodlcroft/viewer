@@ -358,9 +358,7 @@ async fn cmd_sync_cardano(
     config_path: Option<PathBuf>,
     skip_images: bool,
 ) -> anyhow::Result<()> {
-    use viewer_binary::{
-        HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, SpriteIndexBuilder, StringRef,
-    };
+    use viewer_binary::{HcfMetadata, ImageFormat, SourcesSection, SpriteIndexBuilder};
     use viewer_ingest::{
         AssetSource, CnftToolsSource, CollectionWriter, HcfBundleResult, HcfBundler, HcfConfig,
         NftcdnClient, PinataClient, Pipeline, PipelineConfig, SpriteConfig, SpriteGenerator,
@@ -419,17 +417,9 @@ async fn cmd_sync_cardano(
     let collection_bin_path = pipeline.dirs.root.join("collection.bin");
     let _sprite_config_placeholder = (); // Sprite config determined after sprite generation
     {
-        use viewer_binary::{HcfMetadata, ImageFormat, SourceMetadata, SourcesSection, StringRef};
+        use viewer_binary::{HcfMetadata, ImageFormat, SourcesSection};
 
-        let sources = SourcesSection::new(vec![SourceMetadata {
-            chain: StringRef(0),
-            id: StringRef(1),
-            token_count: assets.len() as u32,
-            synced_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as u32,
-        }]);
+        let sources = SourcesSection::new(vec![]); // placeholder, intern_source_strings below
 
         // Placeholder HCF metadata (will be updated in pass 2)
         let hcf_metadata = HcfMetadata {
@@ -448,6 +438,9 @@ async fn cmd_sync_cardano(
             config.rarity.hide,
         )
         .ok_or_else(|| anyhow::anyhow!("Too many trait values for binary format"))?;
+
+        // Intern source chain/policy_id into string table
+        writer.intern_source_strings(&[("cardano", policy_id, assets.len() as u32)])?;
 
         // Add trait definitions
         for (trait_name, values) in analysis.trait_values() {
@@ -876,16 +869,8 @@ async fn cmd_sync_cardano(
     };
     println!("\nWriting collection.bin (pass 2 - {})...", pass2_label);
     {
-        // Create sources section
-        let sources = SourcesSection::new(vec![SourceMetadata {
-            chain: StringRef(0),
-            id: StringRef(1),
-            token_count: assets.len() as u32,
-            synced_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as u32,
-        }]);
+        // Placeholder sources section (intern_source_strings called below)
+        let sources = SourcesSection::new(vec![]);
 
         // Detect image format
         // Pinata mode: use WebP (gateway will convert)
@@ -926,6 +911,9 @@ async fn cmd_sync_cardano(
             config.rarity.hide,
         )
         .ok_or_else(|| anyhow::anyhow!("Too many trait values for binary format"))?;
+
+        // Intern source chain/policy_id into string table
+        writer.intern_source_strings(&[("cardano", policy_id, assets.len() as u32)])?;
 
         // Add trait definitions
         for (trait_name, values) in analysis.trait_values() {

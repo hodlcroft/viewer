@@ -60,6 +60,47 @@ fn DebugInfo(data: CollectionData) -> impl IntoView {
             </section>
 
             <section class="debug-section">
+                <h2>"Source Info"</h2>
+                {
+                    // Parse raw header to show source section details
+                    let raw = &data.raw;
+                    let sources_offset = if raw.len() >= 52 {
+                        u32::from_le_bytes([raw[48], raw[49], raw[50], raw[51]])
+                    } else { 0 };
+                    let source_count = if raw.len() >= 16 { raw[15] } else { 0 };
+                    let string_table_offset = if raw.len() >= 20 {
+                        u32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]])
+                    } else { 0 };
+                    let trait_schema_offset = if raw.len() >= 24 {
+                        u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]])
+                    } else { 0 };
+
+                    // Read raw source bytes if offset is valid
+                    let source_raw = if sources_offset > 0 && (sources_offset as usize) < raw.len() {
+                        let start = sources_offset as usize;
+                        let end = (start + 20).min(raw.len());
+                        raw[start..end].iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+                    } else {
+                        "N/A".to_string()
+                    };
+
+                    view! {
+                        <table class="debug-table">
+                            <tbody>
+                                <tr><td>"Chain"</td><td>{data.chain.clone().unwrap_or_else(|| "N/A".into())}</td></tr>
+                                <tr><td>"Policy ID"</td><td class="mono">{data.policy_id.clone().unwrap_or_else(|| "N/A".into())}</td></tr>
+                                <tr><td>"source_count (header[15])"</td><td>{source_count}</td></tr>
+                                <tr><td>"sources_offset (header[48..52])"</td><td>{sources_offset}</td></tr>
+                                <tr><td>"string_table_offset"</td><td>{string_table_offset}</td></tr>
+                                <tr><td>"trait_schema_offset"</td><td>{trait_schema_offset}</td></tr>
+                                <tr><td>"Raw bytes at sources_offset"</td><td class="mono">{source_raw}</td></tr>
+                            </tbody>
+                        </table>
+                    }
+                }
+            </section>
+
+            <section class="debug-section">
                 <h2>"Traits (" {data.traits.len()} ")"</h2>
                 <ul class="debug-traits">
                     {traits_summary.into_iter().map(|(name, count, preview)| {

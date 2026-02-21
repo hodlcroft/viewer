@@ -19,6 +19,7 @@ pub fn StaticGrid(
     tokens: Vec<TokenInfo>,
     filter_css: Signal<String>,
     sort_css: Signal<String>,
+    #[prop(into)] owned_filter_css: Signal<String>,
 ) -> impl IntoView {
     let total = tokens.len();
     let split = total.min(INITIAL_BATCH);
@@ -45,6 +46,7 @@ pub fn StaticGrid(
     view! {
         <style>{move || filter_css.get()}</style>
         <style>{move || sort_css.get()}</style>
+        <style>{move || owned_filter_css.get()}</style>
         <div class="static-grid">
             <For
                 each=move || displayed.get()

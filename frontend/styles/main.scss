@@ -68,6 +68,7 @@ body {
     color: var(--text-primary);
     line-height: 1.6;
     min-height: 100vh;
+    overflow-y: scroll;
 }
 
 a {
@@ -1059,6 +1060,161 @@ a {
         line-height: 1.8;
         color: var(--text-secondary);
     }
+}
+
+// Owned card indicator — wallet icon inline with name
+.nft-card.owned .nft-card-info {
+    display: flex;
+    align-items: center;
+}
+
+.nft-card.owned .nft-card-info::after {
+    content: "";
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    margin-left: auto;
+    padding-left: 6px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23ffd700'%3E%3Cpath d='M21 18v1a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v1h-9a2 2 0 00-2 2v8a2 2 0 002 2h9zm-9-2h10V8H12v8zm4-2.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3z'/%3E%3C/svg%3E")
+        no-repeat center;
+    background-size: contain;
+    opacity: 0.9;
+}
+
+// Owned filter toggle (in gallery header)
+.wallet-btn.wallet-btn-owned-active {
+    background: rgba(255, 215, 0, 0.15);
+    border-color: #ffd700;
+    color: #ffd700;
+
+    &:hover {
+        background: rgba(255, 215, 0, 0.25);
+    }
+}
+
+// Wallet connector
+.wallet-button-container {
+    position: relative;
+}
+
+.wallet-btn {
+    font-size: 13px;
+    padding: 4px 12px;
+    border-radius: var(--badge-radius);
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+        background 0.15s,
+        border-color 0.15s;
+
+    &:hover:not(:disabled) {
+        background: var(--bg-tertiary);
+        border-color: var(--accent);
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+}
+
+.wallet-btn-disconnect {
+    font-size: 12px;
+    padding: 2px 8px;
+    background: transparent;
+    border-color: var(--border);
+    color: var(--text-muted);
+
+    &:hover {
+        color: #ff6b6b;
+        border-color: #ff6b6b;
+    }
+}
+
+.wallet-dropdown-wrapper {
+    position: relative;
+}
+
+.wallet-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    min-width: 200px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--badge-radius);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    z-index: 100;
+    overflow: hidden;
+}
+
+.wallet-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s;
+
+    &:hover {
+        background: var(--bg-tertiary);
+    }
+
+    &:not(:last-child) {
+        border-bottom: 1px solid var(--glass-border-subtle);
+    }
+}
+
+.wallet-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+}
+
+.wallet-connected {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.wallet-address {
+    font-size: 12px;
+    font-family: monospace;
+    color: var(--text-secondary);
+    padding: 2px 6px;
+    background: var(--bg-tertiary);
+    border-radius: var(--badge-radius);
+}
+
+.wallet-error-state {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wallet-error-msg {
+    font-size: 12px;
+    color: #ff6b6b;
+}
+
+.spinner-tiny {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
 }
 
 // Theme imports

@@ -1,11 +1,14 @@
-use crate::{CollectionCache, HcfInfo, RarityAlgorithm, TokenInfo, TraitInfo, collection_url, fetch_collection, fetch_hcf_image_with_signal};
 use super::SortContext;
+use crate::{
+    CollectionCache, HcfInfo, RarityAlgorithm, TokenInfo, TraitInfo, collection_url,
+    fetch_collection, fetch_hcf_image_with_signal,
+};
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::cell::RefCell;
 
 /// Tracks active loading requests (Send+Sync for context)
 #[derive(Clone)]
@@ -66,8 +69,8 @@ fn new_abort_signal() -> web_sys::AbortSignal {
         }
 
         // Create new controller
-        let controller = web_sys::AbortController::new()
-            .expect("AbortController should be available");
+        let controller =
+            web_sys::AbortController::new().expect("AbortController should be available");
         let signal = controller.signal();
         *cell.borrow_mut() = Some(controller);
         signal
@@ -232,7 +235,11 @@ struct DecodedTrait {
 }
 
 /// Decode token traits from bitmap
-fn decode_token_traits(token: &TokenInfo, traits: &[TraitInfo], total_tokens: u32) -> Vec<DecodedTrait> {
+fn decode_token_traits(
+    token: &TokenInfo,
+    traits: &[TraitInfo],
+    total_tokens: u32,
+) -> Vec<DecodedTrait> {
     let mut result = Vec::new();
 
     for trait_info in traits {
@@ -260,8 +267,6 @@ fn decode_token_traits(token: &TokenInfo, traits: &[TraitInfo], total_tokens: u3
 
     result
 }
-
-
 
 #[component]
 fn TokenDetail(
@@ -325,11 +330,18 @@ fn TokenDetail(
         let request_id = tracker.start_request();
 
         wasm_bindgen_futures::spawn_local(async move {
-            match fetch_hcf_image_with_signal(&slug_for_fetch, &hcf_info, &location, Some(&abort_signal)).await {
+            match fetch_hcf_image_with_signal(
+                &slug_for_fetch,
+                &hcf_info,
+                &location,
+                Some(&abort_signal),
+            )
+            .await
+            {
                 Ok(blob_url) => {
                     // Check if this request is still current before updating DOM
                     if tracker.current_id() == request_id {
-                        if let Some(img) = img_ref_clone.get() {
+                        if let Some(img) = img_ref_clone.get_untracked() {
                             img.set_src(&blob_url);
                             let _ = img.class_list().add_1("loaded");
                         }
@@ -359,22 +371,20 @@ fn TokenDetail(
         let prev_url = prev_url.clone();
         let next_url = next_url.clone();
 
-        move |ev: web_sys::KeyboardEvent| {
-            match ev.key().as_str() {
-                "ArrowLeft" | "a" | "A" => {
-                    if let Some(ref url) = prev_url {
-                        ev.prevent_default();
-                        navigate(url, Default::default());
-                    }
+        move |ev: web_sys::KeyboardEvent| match ev.key().as_str() {
+            "ArrowLeft" | "a" | "A" => {
+                if let Some(ref url) = prev_url {
+                    ev.prevent_default();
+                    navigate(url, Default::default());
                 }
-                "ArrowRight" | "d" | "D" => {
-                    if let Some(ref url) = next_url {
-                        ev.prevent_default();
-                        navigate(url, Default::default());
-                    }
-                }
-                _ => {}
             }
+            "ArrowRight" | "d" | "D" => {
+                if let Some(ref url) = next_url {
+                    ev.prevent_default();
+                    navigate(url, Default::default());
+                }
+            }
+            _ => {}
         }
     };
 

@@ -1,7 +1,10 @@
-use crate::{CollectionCache, CollectionData, RarityAlgorithm, StaticGrid, Theme, TraitInfo, TokenInfo, fetch_collection};
+use crate::{
+    CollectionCache, CollectionData, OwnedContext, RarityAlgorithm, StaticGrid, Theme, TokenInfo,
+    TraitInfo, ViewerAssetId, WalletButton, fetch_collection,
+};
 use leptos::prelude::*;
 use leptos_router::hooks::{use_params_map, use_query_map};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use wasm_bindgen::JsValue;
 
 /// Active filters: trait_name -> value
@@ -116,12 +119,13 @@ impl SortContext {
             }
         }
 
-        self.sorted_ids.set(sorted.iter().map(|t| t.asset_id.clone()).collect());
+        self.sorted_ids
+            .set(sorted.iter().map(|t| t.asset_id.clone()).collect());
     }
 
     /// Get the previous asset_id in the sorted list
     pub fn prev_id(&self, current_id: &str) -> Option<String> {
-        let ids = self.sorted_ids.get();
+        let ids = self.sorted_ids.get_untracked();
         let pos = ids.iter().position(|id| id == current_id)?;
         if pos > 0 {
             Some(ids[pos - 1].clone())
@@ -132,7 +136,7 @@ impl SortContext {
 
     /// Get the next asset_id in the sorted list
     pub fn next_id(&self, current_id: &str) -> Option<String> {
-        let ids = self.sorted_ids.get();
+        let ids = self.sorted_ids.get_untracked();
         let pos = ids.iter().position(|id| id == current_id)?;
         if pos + 1 < ids.len() {
             Some(ids[pos + 1].clone())
@@ -143,7 +147,7 @@ impl SortContext {
 
     /// Get current position and total count
     pub fn position(&self, current_id: &str) -> Option<(usize, usize)> {
-        let ids = self.sorted_ids.get();
+        let ids = self.sorted_ids.get_untracked();
         let pos = ids.iter().position(|id| id == current_id)?;
         Some((pos, ids.len()))
     }
@@ -260,13 +264,9 @@ pub fn GalleryPage() -> impl IntoView {
             format!("{path}?filter={}", filter_param.join(","))
         };
         if let Some(window) = web_sys::window() {
-            let _ = window.history().and_then(|h| {
-                h.replace_state_with_url(
-                    &JsValue::NULL,
-                    "",
-                    Some(&url),
-                )
-            });
+            let _ = window
+                .history()
+                .and_then(|h| h.replace_state_with_url(&JsValue::NULL, "", Some(&url)));
         }
     });
 
@@ -334,6 +334,8 @@ pub fn GalleryPage() -> impl IntoView {
                                 let has_source_rarity = collection.has_source_rarity;
                                 let collection_name = collection.name.clone();
                                 let traits = collection.traits.clone();
+                                let is_cardano = collection.chain.as_deref() == Some("cardano");
+                                let policy_id = collection.policy_id.clone();
 
                                 // Compute rarity before rendering
                                 let mut tokens = collection.tokens.clone();
@@ -426,6 +428,58 @@ pub fn GalleryPage() -> impl IntoView {
                                     }
                                 });
 
+                                // Wallet ownership via OwnedContext + CSS class on cards
+                                let show_owned_only = RwSignal::new(false);
+                                let owned_ctx = OwnedContext::new(policy_id.clone());
+                                provide_context(owned_ctx.clone());
+
+                                if is_cardano {
+                                    // Fetch balance when wallet connects
+                                    let wallet_ctx = wallet_leptos::try_use_wallet();
+                                    if let Some(ref w) = wallet_ctx {
+                                        let w2 = w.clone();
+                                        Effect::new(move |_| {
+                                            let state = w2.connection_state.get();
+                                            if matches!(state, wallet_leptos::ConnectionState::Connected { .. }) {
+                                                w2.fetch_balance();
+                                            }
+                                        });
+                                    }
+
+                                    // Update owned IDs when balance changes
+                                    let pid = policy_id.clone();
+                                    let owned_ctx2 = owned_ctx.clone();
+                                    Effect::new(move |_| {
+                                        let Some(ref wallet) = wallet_ctx else { return };
+                                        let Some(balance) = wallet.balance.get() else {
+                                            owned_ctx2.owned_ids.set(HashSet::new());
+                                            return;
+                                        };
+                                        let Some(ref pid) = pid else { return };
+
+                                        let ids: HashSet<ViewerAssetId> = balance
+                                            .asset_ids_for_policy(pid)
+                                            .into_iter()
+                                            .map(ViewerAssetId::Cardano)
+                                            .collect();
+                                        tracing::info!(
+                                            policy_id = %pid,
+                                            owned_count = ids.len(),
+                                            "Updated owned asset IDs"
+                                        );
+                                        owned_ctx2.owned_ids.set(ids);
+                                    });
+                                }
+
+                                // Single CSS rule for owned-only filter
+                                let owned_filter_css = Signal::derive(move || {
+                                    if show_owned_only.get() {
+                                        ".static-grid .nft-card:not(.owned) { display: none; }".to_string()
+                                    } else {
+                                        String::new()
+                                    }
+                                });
+
                                 view! {
                                     <GalleryHeader
                                         slug=s.clone()
@@ -436,6 +490,8 @@ pub fn GalleryPage() -> impl IntoView {
                                         loading=false
                                         has_source_rarity=has_source_rarity
                                         sort_ctx=sort_ctx
+                                        is_cardano=is_cardano
+                                        show_owned_only=show_owned_only
                                     />
                                     <div class="gallery-content">
                                         <StaticGrid
@@ -443,6 +499,7 @@ pub fn GalleryPage() -> impl IntoView {
                                             tokens=tokens
                                             filter_css=filter_css
                                             sort_css=sort_css
+                                            owned_filter_css=owned_filter_css
                                         />
                                     </div>
                                 }.into_any()
@@ -481,6 +538,8 @@ fn GalleryHeader(
     loading: bool,
     #[prop(optional)] has_source_rarity: bool,
     #[prop(optional)] sort_ctx: Option<SortContext>,
+    #[prop(optional)] is_cardano: bool,
+    #[prop(optional)] show_owned_only: Option<RwSignal<bool>>,
 ) -> impl IntoView {
     let filter_ctx = use_context::<FilterContext>();
 
@@ -640,6 +699,23 @@ fn GalleryHeader(
                                     </select>
                                 }
                             }}
+                            {show_owned_only.map(|owned_sig| {
+                                let wallet = wallet_leptos::try_use_wallet();
+                                view! {
+                                    <Show when=move || {
+                                        wallet.as_ref().map(|w| w.balance.get().is_some()).unwrap_or(false)
+                                    }>
+                                        <button
+                                            class="wallet-btn"
+                                            class:wallet-btn-owned-active=move || owned_sig.get()
+                                            on:click=move |_| owned_sig.update(|v| *v = !*v)
+                                        >
+                                            "Owned"
+                                        </button>
+                                    </Show>
+                                }
+                            })}
+                            {is_cardano.then(|| view! { <WalletButton /> })}
                         }.into_any()
                     }}
                 </div>
