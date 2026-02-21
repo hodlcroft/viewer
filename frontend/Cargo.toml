@@ -23,6 +23,7 @@ ui-core = { git = "https://github.com/defrag-au/shared-ui", rev = "24cc859" }
 web-sys = { version = "0.3", features = [
     "Window",
     "Document",
+    "History",
     "Location",
     "Storage",
     "UrlSearchParams",

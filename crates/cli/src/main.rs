@@ -47,6 +47,16 @@ enum Commands {
         #[command(subcommand)]
         action: CidAction,
     },
+
+    /// Dump collection.bin contents for debugging
+    Dump {
+        /// Path to collection.bin file or directory containing it
+        path: PathBuf,
+
+        /// Show a specific token by name (e.g. "#0511")
+        #[arg(long)]
+        token: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -197,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
             CidAction::Compute { path, target } => cmd_cid_compute(&path, target),
             CidAction::Info { cid } => cmd_cid_info(&cid),
         },
+        Commands::Dump { path, token } => cmd_dump(&path, token.as_deref()),
     }
 }
 
@@ -450,7 +461,7 @@ async fn cmd_sync_cardano(
             let traits: Vec<(u8, u8)> = asset
                 .traits
                 .iter()
-                .filter_map(|(name, values)| analysis.encode_trait(name, values))
+                .flat_map(|(name, values)| analysis.encode_trait(name, values))
                 .collect();
 
             let token = viewer_ingest::TokenData {
@@ -928,7 +939,7 @@ async fn cmd_sync_cardano(
             let traits: Vec<(u8, u8)> = asset
                 .traits
                 .iter()
-                .filter_map(|(name, values)| analysis.encode_trait(name, values))
+                .flat_map(|(name, values)| analysis.encode_trait(name, values))
                 .collect();
 
             let token = viewer_ingest::TokenData {
@@ -1595,6 +1606,178 @@ async fn cmd_pinata_clean(
     println!("  Deleted: {}", deleted);
     if failed > 0 {
         println!("  Failed: {}", failed);
+    }
+
+    Ok(())
+}
+
+fn cmd_dump(path: &PathBuf, token_filter: Option<&str>) -> anyhow::Result<()> {
+    use viewer_binary::{HEADER_SIZE, Header, TOKEN_FIXED_SIZE, TraitSchema};
+
+    let bin_path = if path.is_file() {
+        path.clone()
+    } else {
+        path.join("collection.bin")
+    };
+
+    let data = std::fs::read(&bin_path)?;
+    anyhow::ensure!(data.len() >= HEADER_SIZE, "File too small for header");
+
+    let header_bytes: [u8; HEADER_SIZE] = data[..HEADER_SIZE].try_into().unwrap();
+    let header = Header::from_bytes(&header_bytes);
+
+    let bitmap_size = header
+        .bitmap_size()
+        .ok_or_else(|| anyhow::anyhow!("Invalid bitmap size"))?;
+    let bitmap_bytes = bitmap_size.byte_size();
+    let token_entry_size = TOKEN_FIXED_SIZE + bitmap_bytes;
+
+    // Parse string table
+    let st_start = header.string_table_offset as usize + 4; // skip length prefix
+    let st_end = header.trait_schema_offset as usize;
+    let string_table = &data[st_start..st_end];
+
+    let read_str = |offset: u16| -> &str {
+        let start = offset as usize;
+        if start >= string_table.len() {
+            return "<invalid>";
+        }
+        let end = string_table[start..]
+            .iter()
+            .position(|&b| b == 0)
+            .map(|p| start + p)
+            .unwrap_or(string_table.len());
+        std::str::from_utf8(&string_table[start..end]).unwrap_or("<invalid utf8>")
+    };
+
+    // Parse trait schema
+    let trait_schema_data =
+        &data[header.trait_schema_offset as usize..header.trait_index_offset as usize];
+    let schema = TraitSchema::from_bytes(trait_schema_data)
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse trait schema"))?;
+
+    println!("=== Collection Dump: {} ===", bin_path.display());
+    println!(
+        "Tokens: {}  Traits: {}  Bitmap: {} bytes  Total values: {}",
+        header.token_count, header.trait_count, bitmap_bytes, schema.total_values
+    );
+    println!(
+        "Flags: 0x{:04x} (hide_rarity={}, multi_source={})",
+        header.flags,
+        header.hide_rarity(),
+        header.is_multi_source()
+    );
+    println!();
+
+    // Print trait schema
+    println!("=== Trait Schema ===");
+    for trait_def in &schema.traits {
+        let name = read_str(trait_def.name.0 as u16);
+        println!(
+            "  {} ({} values, bits {}..{})",
+            name,
+            trait_def.values.len(),
+            trait_def.bitmap_offset,
+            trait_def.bitmap_offset as usize + trait_def.values.len() - 1
+        );
+        for (i, val) in trait_def.values.iter().enumerate() {
+            let val_name = read_str(val.name.0 as u16);
+            println!(
+                "    bit {:3}: {:30} (count: {})",
+                trait_def.bitmap_offset + i as u16,
+                val_name,
+                val.count
+            );
+        }
+    }
+    println!();
+
+    // Parse asset IDs
+    let asset_id_index_start = header.asset_id_index_offset as usize;
+
+    // Dump tokens
+    let token_table_start = header.token_table_offset as usize;
+    let mut found_token = false;
+
+    for i in 0..header.token_count as usize {
+        let offset = token_table_start + i * token_entry_size;
+        let entry = &data[offset..offset + token_entry_size];
+
+        let rarity_rank = u16::from_le_bytes([entry[0], entry[1]]);
+        let _rarity_score = u16::from_le_bytes([entry[2], entry[3]]);
+        let name_ref = u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]);
+        let bitmap = &entry[TOKEN_FIXED_SIZE..TOKEN_FIXED_SIZE + bitmap_bytes];
+
+        let name = if name_ref & viewer_binary::NAME_REF_CUSTOM_FLAG != 0 {
+            let str_offset = (name_ref & viewer_binary::NAME_REF_OFFSET_MASK) as u16;
+            read_str(str_offset).to_string()
+        } else {
+            format!("#{name_ref:04}")
+        };
+
+        // Read asset ID
+        let offset_entry = asset_id_index_start + i * 4;
+        let asset_id_str_offset = u32::from_le_bytes([
+            data[offset_entry],
+            data[offset_entry + 1],
+            data[offset_entry + 2],
+            data[offset_entry + 3],
+        ]) as usize;
+        let asset_id_start = asset_id_index_start + asset_id_str_offset;
+        let asset_id_end = data[asset_id_start..]
+            .iter()
+            .position(|&b| b == 0)
+            .map(|p| asset_id_start + p)
+            .unwrap_or(data.len());
+        let asset_id =
+            std::str::from_utf8(&data[asset_id_start..asset_id_end]).unwrap_or("<invalid>");
+
+        // If filtering by token name, only show matching
+        if let Some(filter) = token_filter {
+            if name != filter && asset_id != filter {
+                continue;
+            }
+        }
+        found_token = true;
+
+        println!("--- Token {i}: {name} (asset_id: {asset_id}) ---");
+        println!("  rarity_rank: {rarity_rank}");
+        let bitmap_hex: String = bitmap.iter().map(|b| format!("{b:02x}")).collect();
+        println!("  bitmap: {bitmap_hex}");
+        println!("  traits:");
+
+        for trait_def in &schema.traits {
+            let trait_name = read_str(trait_def.name.0 as u16);
+            let mut matched = Vec::new();
+            for (j, val) in trait_def.values.iter().enumerate() {
+                let bit = trait_def.bitmap_offset as usize + j;
+                let byte_idx = bit / 8;
+                let bit_idx = bit % 8;
+                if byte_idx < bitmap.len() && bitmap[byte_idx] & (1 << bit_idx) != 0 {
+                    let val_name = read_str(val.name.0 as u16);
+                    matched.push(format!("{val_name} (count: {}, bit: {bit})", val.count));
+                }
+            }
+            if !matched.is_empty() {
+                for m in &matched {
+                    println!("    {trait_name}: {m}");
+                }
+            }
+        }
+        println!();
+
+        // If not filtering, only show first 5
+        if token_filter.is_none() && i >= 4 {
+            println!(
+                "  ... ({} more tokens, use --token to show a specific one)",
+                header.token_count as usize - 5
+            );
+            break;
+        }
+    }
+
+    if token_filter.is_some() && !found_token {
+        println!("Token '{}' not found", token_filter.unwrap());
     }
 
     Ok(())

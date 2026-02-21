@@ -2,6 +2,7 @@ use crate::{CollectionCache, InfiniteGrid, RarityAlgorithm, TraitInfo, fetch_col
 use leptos::prelude::*;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use std::collections::HashMap;
+use wasm_bindgen::JsValue;
 
 /// Active filters: trait_name -> value
 pub type Filters = HashMap<String, String>;
@@ -161,6 +162,8 @@ impl Default for SortContext {
 pub struct CollectionConfig {
     /// Whether to hide rarity rankings in the UI
     pub hide_rarity: bool,
+    /// Whether the binary includes source rarity data
+    pub has_source_rarity: bool,
     /// Total token count (for percentile calculations)
     pub total_tokens: u32,
 }
@@ -226,20 +229,46 @@ pub fn GalleryPage() -> impl IntoView {
     // Get sort context from app-level provider
     let sort_ctx = expect_context::<SortContext>();
 
-    // Parse initial filter from URL query param: ?filter=Trait:Value
+    // Parse initial filters from URL query param: ?filter=Trait:Value,Trait2:Value2
     Effect::new(move |_| {
         if let Some(filter_param) = query.read().get("filter") {
-            if let Some((trait_name, value)) = filter_param.split_once(':') {
-                // URL decode the values
-                let trait_name = urlencoding::decode(trait_name)
-                    .map(|s| s.into_owned())
-                    .unwrap_or_else(|_| trait_name.to_string());
-                let value = urlencoding::decode(value)
-                    .map(|s| s.into_owned())
-                    .unwrap_or_else(|_| value.to_string());
+            for part in filter_param.split(',') {
+                if let Some((trait_name, value)) = part.split_once(':') {
+                    let trait_name = urlencoding::decode(trait_name)
+                        .map(|s| s.into_owned())
+                        .unwrap_or_else(|_| trait_name.to_string());
+                    let value = urlencoding::decode(value)
+                        .map(|s| s.into_owned())
+                        .unwrap_or_else(|_| value.to_string());
 
-                filter_ctx.add_filter(trait_name, value);
+                    filter_ctx.add_filter(trait_name, value);
+                }
             }
+        }
+    });
+
+    // Sync filter state to URL query params
+    Effect::new(move |_| {
+        let filters = filter_ctx.get_filters();
+        let slug = params.read().get("slug").unwrap_or_default();
+        let path = format!("/{slug}");
+        let url = if filters.is_empty() {
+            path
+        } else {
+            let filter_param: Vec<String> = filters
+                .iter()
+                .map(|(k, v)| format!("{}:{}", urlencoding::encode(k), urlencoding::encode(v)))
+                .collect();
+            format!("{path}?filter={}", filter_param.join(","))
+        };
+        if let Some(window) = web_sys::window() {
+            let _ = window.history().and_then(|h| {
+                h.replace_state_with_url(
+                    &JsValue::NULL,
+                    "",
+                    Some(&url),
+                )
+            });
         }
     });
 
@@ -289,8 +318,17 @@ pub fn GalleryPage() -> impl IntoView {
                                 // Provide collection config context for child components
                                 provide_context(CollectionConfig {
                                     hide_rarity: collection.hide_rarity,
+                                    has_source_rarity: collection.has_source_rarity,
                                     total_tokens: collection.token_count,
                                 });
+
+                                // Default to MagicEden algorithm when no source rarity is available
+                                if !collection.has_source_rarity {
+                                    let rarity_algo = expect_context::<RwSignal<RarityAlgorithm>>();
+                                    if rarity_algo.get() == RarityAlgorithm::Source {
+                                        rarity_algo.set(RarityAlgorithm::MagicEden);
+                                    }
+                                }
 
                                 // Store collection for filtering
                                 let collection = StoredValue::new(collection);
@@ -334,7 +372,7 @@ pub fn GalleryPage() -> impl IntoView {
 
                                 let filtered_count = Signal::derive(move || filtered_tokens.get().len());
 
-                                let hide_rarity = collection.with_value(|c| c.hide_rarity);
+                                let has_source_rarity = collection.with_value(|c| c.has_source_rarity);
                                 let collection_name = collection.with_value(|c| c.name.clone());
 
                                 view! {
@@ -345,7 +383,7 @@ pub fn GalleryPage() -> impl IntoView {
                                         filtered_count=filtered_count
                                         trait_options=trait_options
                                         loading=false
-                                        hide_rarity=hide_rarity
+                                        has_source_rarity=has_source_rarity
                                         sort_ctx=sort_ctx
                                     />
                                     <div class="gallery-content">
@@ -388,7 +426,7 @@ fn GalleryHeader(
     #[prop(into)] filtered_count: Signal<usize>,
     trait_options: Vec<TraitValueOption>,
     loading: bool,
-    #[prop(optional)] hide_rarity: bool,
+    #[prop(optional)] has_source_rarity: bool,
     #[prop(optional)] sort_ctx: Option<SortContext>,
 ) -> impl IntoView {
     let filter_ctx = use_context::<FilterContext>();
@@ -494,17 +532,19 @@ fn GalleryHeader(
                                     }
                                 }}
                             </span>
-                            // Rarity controls (only show if rarity is available)
-                            {(!hide_rarity && sort_ctx.is_some()).then(|| {
+                            // Rarity controls
+                            {sort_ctx.is_some().then(|| {
                                 let ctx = sort_ctx.unwrap();
                                 let rarity_algo = expect_context::<RwSignal<RarityAlgorithm>>();
                                 view! {
                                     <div class="rarity-algo-toggle">
-                                        <button
-                                            class="algo-btn"
-                                            class:active=move || rarity_algo.get() == RarityAlgorithm::Source
-                                            on:click=move |_| rarity_algo.set(RarityAlgorithm::Source)
-                                        >"Source"</button>
+                                        {has_source_rarity.then(|| view! {
+                                            <button
+                                                class="algo-btn"
+                                                class:active=move || rarity_algo.get() == RarityAlgorithm::Source
+                                                on:click=move |_| rarity_algo.set(RarityAlgorithm::Source)
+                                            >"Source"</button>
+                                        })}
                                         <button
                                             class="algo-btn"
                                             class:active=move || rarity_algo.get() == RarityAlgorithm::MagicEden

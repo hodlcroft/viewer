@@ -87,21 +87,25 @@ impl TraitAnalysis {
         })
     }
 
-    /// Encode a trait name and value to (trait_index, value_index).
+    /// Encode a trait name and its values to (trait_index, value_index) pairs.
     ///
-    /// Returns None if the trait or value is not found (e.g., was ignored).
-    pub fn encode_trait(&self, name: &str, value: &[String]) -> Option<(u8, u8)> {
-        // Find trait index
-        let trait_idx = self.trait_values.keys().position(|n| n == name)?;
+    /// Returns a pair for each value the token has for this trait.
+    /// Returns an empty vec if the trait is not found (e.g., was ignored).
+    pub fn encode_trait(&self, name: &str, values: &[String]) -> Vec<(u8, u8)> {
+        let Some(trait_idx) = self.trait_values.keys().position(|n| n == name) else {
+            return Vec::new();
+        };
+        let Some(trait_values) = self.trait_values.get(name) else {
+            return Vec::new();
+        };
 
-        // Get the values for this trait
-        let trait_values = self.trait_values.get(name)?;
-
-        // Find value index (use first value for multi-valued traits)
-        let first_value = value.first()?;
-        let value_idx = trait_values.keys().position(|v| v == first_value)?;
-
-        Some((trait_idx as u8, value_idx as u8))
+        values
+            .iter()
+            .filter_map(|v| {
+                let value_idx = trait_values.keys().position(|tv| tv == v)?;
+                Some((trait_idx as u8, value_idx as u8))
+            })
+            .collect()
     }
 }
 
