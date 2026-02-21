@@ -439,7 +439,8 @@ pub fn GalleryPage() -> impl IntoView {
                                     if let Some(ref w) = wallet_ctx {
                                         let w2 = w.clone();
                                         Effect::new(move |_| {
-                                            if w2.is_connected() {
+                                            let state = w2.connection_state.get();
+                                            if matches!(state, wallet_leptos::ConnectionState::Connected { .. }) {
                                                 w2.fetch_balance();
                                             }
                                         });

@@ -78,8 +78,9 @@ pub fn WalletButton() -> impl IntoView {
                         }.into_any()
                     }
                     ConnectionState::Connected { .. } => {
-                        // Use bech32 stake address if available, otherwise truncated hex
-                        let display_addr = wallet.stake_address.get()
+                        // Prefer ADA handle > stake address > truncated hex
+                        let display_addr = wallet.handle.get()
+                            .or_else(|| wallet.stake_address.get())
                             .unwrap_or_else(|| {
                                 wallet.address.get_untracked()
                                     .map(|a| if a.len() > 16 {
