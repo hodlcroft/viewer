@@ -1061,17 +1061,35 @@ a {
     }
 }
 
-// Owned card highlight
-.nft-card.owned {
-    outline: 2px solid #ffd700;
-    outline-offset: -2px;
+// Owned card indicator — wallet icon aligned with name
+.nft-card.owned .nft-card-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.nft-card.owned .nft-card-info::after {
+    content: "";
+    display: inline-block;
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    margin-left: 6px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23ffd700'%3E%3Cpath d='M21 18v1a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v1h-9a2 2 0 00-2 2v8a2 2 0 002 2h9zm-9-2h10V8H12v8zm4-2.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3z'/%3E%3C/svg%3E")
+        no-repeat center;
+    background-size: contain;
+    opacity: 0.9;
 }
 
 // Owned filter toggle (in gallery header)
-.wallet-btn-owned-active {
+.wallet-btn.wallet-btn-owned-active {
     background: rgba(255, 215, 0, 0.15);
     border-color: #ffd700;
     color: #ffd700;
+
+    &:hover {
+        background: rgba(255, 215, 0, 0.25);
+    }
 }
 
 // Wallet connector
