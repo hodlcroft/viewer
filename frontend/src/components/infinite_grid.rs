@@ -3,7 +3,7 @@ use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
 
 /// How many items to load per batch
-const BATCH_SIZE: usize = 128;
+const BATCH_SIZE: usize = 64;
 
 /// Infinite scrolling grid that loads items in batches
 #[component]

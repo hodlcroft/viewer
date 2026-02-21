@@ -537,12 +537,32 @@ a {
         font-size: 0.65rem;
         font-weight: 600;
         background: var(--badge-bg);
+        color: #ffffff;
         padding: 2px 6px;
         border-radius: var(--badge-radius);
         backdrop-filter: blur(4px);
         display: flex;
         align-items: center;
         gap: 3px;
+        border: 1px solid rgba(255, 255, 255, 0.4);
+        border-right: 4px solid currentColor;
+
+        // Rarity color applies to the right border accent
+        &.rarity-legendary {
+            border-right-color: var(--rarity-legendary);
+        }
+        &.rarity-epic {
+            border-right-color: var(--rarity-epic);
+        }
+        &.rarity-rare {
+            border-right-color: var(--rarity-rare);
+        }
+        &.rarity-uncommon {
+            border-right-color: var(--rarity-uncommon);
+        }
+        &.rarity-common {
+            border-right-color: var(--rarity-common);
+        }
 
         svg {
             width: 0.7em;
@@ -832,6 +852,23 @@ a {
     .tp-value,
     .tp-pct {
         color: inherit;
+
+        // Preserve rarity tier coloring on trait values
+        &.rarity-legendary {
+            color: var(--rarity-legendary);
+        }
+        &.rarity-epic {
+            color: var(--rarity-epic);
+        }
+        &.rarity-rare {
+            color: var(--rarity-rare);
+        }
+        &.rarity-uncommon {
+            color: var(--rarity-uncommon);
+        }
+        &.rarity-common {
+            color: var(--rarity-common);
+        }
     }
 }
 

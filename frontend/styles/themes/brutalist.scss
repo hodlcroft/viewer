@@ -1,41 +1,41 @@
 // Brutalist Theme
-// Harsh, monochrome, no-nonsense. Zero border radius, tight grid,
-// monospace type, solid borders, no shadows or glass effects.
+// Sharp, dense, no-nonsense. Zero border radius, tight grid,
+// monospace type, no shadows or glass effects. Keeps rarity color.
 
 [data-theme="brutalist"] {
-    // Harsh monochrome palette
-    --bg-primary: #000000;
-    --bg-secondary: #000000;
-    --bg-tertiary: #1a1a1a;
+    // Dark industrial palette
+    --bg-primary: #0a0a0a;
+    --bg-secondary: #0a0a0a;
+    --bg-tertiary: #161616;
 
-    --text-primary: #ffffff;
-    --text-secondary: #aaaaaa;
-    --text-muted: #666666;
+    --text-primary: #e0e0e0;
+    --text-secondary: #888888;
+    --text-muted: #777777;
 
-    --accent: #ffffff;
-    --accent-hover: #cccccc;
+    --accent: #ff3333;
+    --accent-hover: #cc2222;
 
-    --border: #ffffff;
-    --success: #00ff00;
-    --error: #ff0000;
+    --border: #555555;
+    --success: #00cc66;
+    --error: #ff3333;
 
-    // Monochrome rarity tiers
-    --rarity-legendary: #ffffff;
-    --rarity-epic: #cccccc;
-    --rarity-rare: #aaaaaa;
-    --rarity-uncommon: #888888;
-    --rarity-common: #666666;
+    // Keep rarity colors vivid
+    --rarity-legendary: #fbbf24;
+    --rarity-epic: #a855f7;
+    --rarity-rare: #3b82f6;
+    --rarity-uncommon: #22c55e;
+    --rarity-common: #555555;
 
     // No glass — solid opaque surfaces
-    --glass-bg: #000000;
-    --glass-bg-heavy: #000000;
-    --glass-border: #ffffff;
-    --glass-border-subtle: #333333;
+    --glass-bg: #0a0a0a;
+    --glass-bg-heavy: #0a0a0a;
+    --glass-border: #333333;
+    --glass-border-subtle: #1a1a1a;
     --glass-highlight: #111111;
-    --glass-highlight-hover: #222222;
-    --glass-highlight-active: #333333;
-    --glass-highlight-strong: #444444;
-    --glass-highlight-intense: #555555;
+    --glass-highlight-hover: #1a1a1a;
+    --glass-highlight-active: #222222;
+    --glass-highlight-strong: #2a2a2a;
+    --glass-highlight-intense: #333333;
 
     // No shadows
     --shadow-sm: none;
@@ -47,10 +47,10 @@
     --badge-radius: 0;
     --panel-radius: 0;
 
-    --badge-bg: #000000;
+    --badge-bg: rgba(0, 0, 0, 0.85);
     --chip-bg: #1a1a1a;
-    --chip-border: #ffffff;
-    --focus-border: #ffffff;
+    --chip-border: #888888;
+    --focus-border: #ff3333;
     --pct-bg: #1a1a1a;
 }
 
@@ -63,7 +63,7 @@
             "Courier New", monospace;
     }
 
-    // Remove all blur effects
+    // Remove blur effects
     .gallery-header {
         backdrop-filter: none;
         border-bottom-width: 2px;
@@ -78,7 +78,7 @@
         backdrop-filter: none;
     }
 
-    // Tighter grid with minimal gaps
+    // Tighter grid, no gaps
     .infinite-grid {
         grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
         gap: 2px;
@@ -91,16 +91,16 @@
         padding: 2px;
     }
 
-    // Card: harsh border, name overlaid on image
+    // Card: borderless images, name overlaid on thumbnail
     .nft-card {
         position: relative;
-        border: 1px solid var(--border);
+        border: none;
         transition: none;
 
         &:hover {
             transform: none;
-            border-color: var(--accent);
-            outline: 1px solid var(--accent);
+            box-shadow: none;
+            outline: 2px solid var(--accent);
         }
 
         .nft-card-info {
@@ -109,8 +109,7 @@
             left: 0;
             right: 0;
             padding: 4px 6px;
-            background: rgba(0, 0, 0, 0.8);
-            border-top: 1px solid var(--border);
+            background: rgba(0, 0, 0, 0.75);
 
             strong {
                 font-size: 11px;
@@ -122,7 +121,8 @@
         }
 
         .rank-badge {
-            border: 1px solid var(--border);
+            top: 0;
+            left: 0;
             font-family: inherit;
         }
     }
@@ -143,7 +143,6 @@
 
     // Filter chips
     .filter-chip {
-        border-width: 1px;
         text-transform: uppercase;
         letter-spacing: 0.5px;
     }
@@ -186,10 +185,6 @@
         text-transform: uppercase;
     }
 
-    .tp-section {
-        border-bottom: 1px solid var(--glass-border-subtle);
-    }
-
     .tp-section-title {
         letter-spacing: 1px;
     }
@@ -217,7 +212,7 @@
             }
 
             &.active {
-                background: var(--text-primary);
+                background: var(--accent);
                 color: var(--bg-primary);
             }
         }
