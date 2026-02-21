@@ -196,6 +196,32 @@ pub enum RarityAlgorithm {
     InformationContent,
 }
 
+/// Visual theme
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum Theme {
+    #[default]
+    Default,
+    Brutalist,
+}
+
+impl Theme {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Theme::Default => "dark",
+            Theme::Brutalist => "brutalist",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "brutalist" => Theme::Brutalist,
+            _ => Theme::Default,
+        }
+    }
+
+
+}
+
 /// Information about a token
 #[derive(Clone, Debug)]
 pub struct TokenInfo {
@@ -427,8 +453,7 @@ impl CollectionData {
         // Check if any tokens have source rarity data baked into the binary
         let has_source_rarity = tokens.iter().any(|t| t.source_rank > 0);
 
-        // Compute rarity ranks dynamically from trait data
-        Self::recompute_rarity(&mut tokens, &traits);
+        // Rarity ranks are computed after first paint (deferred in gallery.rs)
 
         // Get sprite metadata from sprites.bin header, or use defaults if not available
         let (sprite_thumb_width, sprite_thumb_height, sprite_grid_columns, sprite_grid_rows, sprite_sheet_count) =
@@ -461,12 +486,16 @@ impl CollectionData {
 
     /// Check if a token matches the given filter bitmap
     pub fn token_matches_filter(&self, token: &TokenInfo, filter_bitmap: &[u8]) -> bool {
-        // Token matches if it has ALL bits set that are in the filter
-        // (filter_bitmap & token_bitmap) == filter_bitmap
-        if filter_bitmap.len() != token.trait_bitmap.len() {
+        Self::bitmap_matches(filter_bitmap, &token.trait_bitmap)
+    }
+
+    /// Check if a token bitmap has ALL bits set that are in the filter bitmap.
+    /// `(filter & token) == filter`
+    pub fn bitmap_matches(filter_bitmap: &[u8], token_bitmap: &[u8]) -> bool {
+        if filter_bitmap.len() != token_bitmap.len() {
             return false;
         }
-        for (f, t) in filter_bitmap.iter().zip(token.trait_bitmap.iter()) {
+        for (f, t) in filter_bitmap.iter().zip(token_bitmap.iter()) {
             if (f & t) != *f {
                 return false;
             }
@@ -475,7 +504,7 @@ impl CollectionData {
     }
 
     /// Compute rarity ranks from trait bitmaps using both scoring algorithms.
-    fn recompute_rarity(tokens: &mut [TokenInfo], traits: &[TraitInfo]) {
+    pub fn recompute_rarity(tokens: &mut [TokenInfo], traits: &[TraitInfo]) {
         let rarity_tokens: Vec<asset_rarity::Token> = tokens
             .iter()
             .map(|token| {
@@ -738,6 +767,33 @@ pub fn main() {
     leptos::mount::mount_to_body(App);
 }
 
+/// Load theme from localStorage, falling back to default
+fn load_theme() -> Theme {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item("theme").ok().flatten())
+        .map(|v| Theme::from_str(&v))
+        .unwrap_or_default()
+}
+
+/// Persist theme to localStorage
+fn save_theme(theme: Theme) {
+    if let Some(storage) = web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+    {
+        let _ = storage.set_item("theme", theme.as_str());
+    }
+}
+
+/// Apply data-theme attribute to the document root element
+fn apply_theme(theme: Theme) {
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        if let Some(el) = doc.document_element() {
+            let _ = el.set_attribute("data-theme", theme.as_str());
+        }
+    }
+}
+
 /// Main application component
 #[component]
 pub fn App() -> impl IntoView {
@@ -749,6 +805,20 @@ pub fn App() -> impl IntoView {
     // Provide shared sort context (persists between navigations)
     provide_context(pages::SortContext::new());
     provide_context(RwSignal::new(RarityAlgorithm::default()));
+
+    // Theme: load from localStorage, apply to DOM, persist on change
+    let theme = RwSignal::new(load_theme());
+    provide_context(theme);
+
+    // Apply theme on initial load
+    apply_theme(theme.get_untracked());
+
+    // React to theme changes: update DOM + localStorage
+    Effect::new(move |_| {
+        let t = theme.get();
+        apply_theme(t);
+        save_theme(t);
+    });
 
     view! {
         <Html {..} lang="en" data-bs-theme="dark"/>

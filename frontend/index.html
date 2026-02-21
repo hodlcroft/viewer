@@ -1,13 +1,37 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NFT Preview Viewer</title>
-    <link data-trunk rel="scss" href="styles/main.scss" />
-</head>
-<body>
-    <div id="app"></div>
-    <link data-trunk rel="rust" data-wasm-opt="z" />
-</body>
+<!doctype html>
+<html lang="en" data-theme="dark" data-bs-theme="dark">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>NFT Preview Viewer</title>
+        <link data-trunk rel="scss" href="styles/main.scss" />
+        <script>
+            // Early sprite preload — starts fetching the first sprite sheet
+            // before WASM loads, cutting LCP waterfall significantly.
+            (function () {
+                var parts = location.pathname.split("/").filter(Boolean);
+                if (parts.length < 1) return;
+                var slug = parts[0];
+                var base = "https://files.hodlcroft.com/collections";
+                // Preview slugs end with -{8-char-alphanumeric}
+                var last = slug.lastIndexOf("-");
+                if (last > 0) {
+                    var hash = slug.substring(last + 1);
+                    if (hash.length === 8 && /^[0-9a-z]+$/.test(hash)) {
+                        base = "https://files.hodlcroft.com/preview";
+                    }
+                }
+                var link = document.createElement("link");
+                link.rel = "preload";
+                link.as = "image";
+                link.href = base + "/" + slug + "/sprites/0000.webp";
+                link.fetchPriority = "high";
+                document.head.appendChild(link);
+            })();
+        </script>
+    </head>
+    <body>
+        <div id="app"></div>
+        <link data-trunk rel="rust" data-wasm-opt="z" />
+    </body>
 </html>

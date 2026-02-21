@@ -1,4 +1,4 @@
-use crate::{CollectionCache, InfiniteGrid, RarityAlgorithm, TraitInfo, fetch_collection};
+use crate::{CollectionCache, CollectionData, RarityAlgorithm, StaticGrid, Theme, TraitInfo, TokenInfo, fetch_collection};
 use leptos::prelude::*;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use std::collections::HashMap;
@@ -77,8 +77,6 @@ pub enum SortOrder {
     Default,
     Rank,
 }
-
-use crate::TokenInfo;
 
 /// Context for sharing sort order and sorted tokens across components
 #[derive(Clone, Copy)]
@@ -330,50 +328,103 @@ pub fn GalleryPage() -> impl IntoView {
                                     }
                                 }
 
-                                // Store collection for filtering
-                                let collection = StoredValue::new(collection);
-
                                 // Get rarity algorithm signal
                                 let rarity_algo = expect_context::<RwSignal<RarityAlgorithm>>();
 
-                                // Derive filtered and sorted tokens reactively
-                                let filtered_tokens = Signal::derive(move || {
-                                    let filters = filter_ctx.get_filters();
-                                    let sort = sort_ctx.get();
-                                    let algo = rarity_algo.get();
-                                    collection.with_value(|c| {
-                                        let mut tokens: Vec<_> = if filters.is_empty() {
-                                            c.tokens.clone()
-                                        } else {
-                                            let filter_bitmap = build_filter_bitmap(&filters, &c.traits, bitmap_size);
-                                            c.tokens
-                                                .iter()
-                                                .filter(|token| c.token_matches_filter(token, &filter_bitmap))
-                                                .cloned()
-                                                .collect()
-                                        };
+                                let has_source_rarity = collection.has_source_rarity;
+                                let collection_name = collection.name.clone();
+                                let traits = collection.traits.clone();
 
-                                        // Apply sort order
-                                        match sort {
-                                            SortOrder::Default => {
-                                                // Already in default order (by index)
-                                            }
-                                            SortOrder::Rank => {
-                                                tokens.sort_by_key(|t| t.rank_for(algo));
+                                // Compute rarity before rendering
+                                let mut tokens = collection.tokens.clone();
+                                CollectionData::recompute_rarity(&mut tokens, &collection.traits);
+                                let token_count = tokens.len();
+
+                                // Derive filter CSS — one rule per active filter using bit classes
+                                // e.g. ".static-grid .nft-card:not(.b42) { display: none; }"
+                                let traits_for_filter = traits.clone();
+                                let filter_css = Signal::derive(move || {
+                                    let filters = filter_ctx.get_filters();
+                                    if filters.is_empty() {
+                                        return String::new();
+                                    }
+                                    let mut css = String::new();
+                                    for (trait_name, value) in &filters {
+                                        if let Some(ti) = traits_for_filter.iter().find(|t| &t.name == trait_name) {
+                                            if let Some(vi) = ti.values.iter().find(|v| &v.value == value) {
+                                                use std::fmt::Write;
+                                                let _ = writeln!(css,
+                                                    ".static-grid .nft-card:not(.b{}) {{ display: none; }}",
+                                                    vi.bit_index
+                                                );
                                             }
                                         }
-
-                                        // Update sort context with current sorted list for detail page navigation
-                                        sort_ctx.update_tokens(&tokens, algo);
-
-                                        tokens
-                                    })
+                                    }
+                                    css
                                 });
 
-                                let filtered_count = Signal::derive(move || filtered_tokens.get().len());
+                                // Derive sort CSS — sets order on each card by #token-{index}
+                                let tokens_for_sort = tokens.clone();
+                                let traits_for_sort = traits.clone();
+                                let sort_css = Signal::derive(move || {
+                                    let sort = sort_ctx.get();
+                                    let algo = rarity_algo.get();
 
-                                let has_source_rarity = collection.with_value(|c| c.has_source_rarity);
-                                let collection_name = collection.with_value(|c| c.name.clone());
+                                    let css = match sort {
+                                        SortOrder::Default => String::new(),
+                                        SortOrder::Rank => {
+                                            let mut indices: Vec<usize> = (0..token_count).collect();
+                                            indices.sort_by_key(|&i| tokens_for_sort[i].rank_for(algo));
+                                            let mut css = String::with_capacity(token_count * 30);
+                                            for (position, &idx) in indices.iter().enumerate() {
+                                                use std::fmt::Write;
+                                                let _ = writeln!(css,
+                                                    "#token-{idx} {{ order: {position}; }}"
+                                                );
+                                            }
+                                            css
+                                        }
+                                    };
+
+                                    // Update sort context for detail page navigation
+                                    let fb = filter_ctx.get_filters();
+                                    let filter_bm = if fb.is_empty() {
+                                        vec![]
+                                    } else {
+                                        build_filter_bitmap(&fb, &traits_for_sort, bitmap_size)
+                                    };
+                                    let mut nav_tokens: Vec<&TokenInfo> = if filter_bm.is_empty() {
+                                        tokens_for_sort.iter().collect()
+                                    } else {
+                                        tokens_for_sort.iter()
+                                            .filter(|t| CollectionData::bitmap_matches(&filter_bm, &t.trait_bitmap))
+                                            .collect()
+                                    };
+                                    match sort {
+                                        SortOrder::Default => {}
+                                        SortOrder::Rank => {
+                                            nav_tokens.sort_by_key(|t| t.rank_for(algo));
+                                        }
+                                    }
+                                    sort_ctx.sorted_ids.set(nav_tokens.iter().map(|t| t.asset_id.clone()).collect());
+
+                                    css
+                                });
+
+                                // Filtered count for header display
+                                let tokens_for_count = tokens.clone();
+                                let traits_for_count = traits.clone();
+                                let filtered_count = Signal::derive(move || {
+                                    let filters = filter_ctx.get_filters();
+                                    if filters.is_empty() {
+                                        token_count
+                                    } else {
+                                        let fb = build_filter_bitmap(&filters, &traits_for_count, bitmap_size);
+                                        tokens_for_count.iter()
+                                            .filter(|t| CollectionData::bitmap_matches(&fb, &t.trait_bitmap))
+                                            .count()
+                                    }
+                                });
 
                                 view! {
                                     <GalleryHeader
@@ -387,9 +438,11 @@ pub fn GalleryPage() -> impl IntoView {
                                         sort_ctx=sort_ctx
                                     />
                                     <div class="gallery-content">
-                                        <InfiniteGrid
+                                        <StaticGrid
                                             slug=s.clone()
-                                            items=filtered_tokens
+                                            tokens=tokens
+                                            filter_css=filter_css
+                                            sort_css=sort_css
                                         />
                                     </div>
                                 }.into_any()
@@ -572,6 +625,21 @@ fn GalleryHeader(
                                     </select>
                                 }
                             })}
+                            {move || {
+                                let theme = expect_context::<RwSignal<Theme>>();
+                                view! {
+                                    <select
+                                        class="theme-toggle"
+                                        on:change=move |ev| {
+                                            let value = event_target_value(&ev);
+                                            theme.set(Theme::from_str(&value));
+                                        }
+                                    >
+                                        <option value="dark" selected=move || theme.get() == Theme::Default>"Default"</option>
+                                        <option value="brutalist" selected=move || theme.get() == Theme::Brutalist>"Brutalist"</option>
+                                    </select>
+                                }
+                            }}
                         }.into_any()
                     }}
                 </div>

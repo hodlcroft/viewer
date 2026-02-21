@@ -1,17 +1,57 @@
-// Preview Viewer Styles - Dark theme
+// Preview Viewer Styles - Themeable via CSS custom properties
 
 :root {
+    // Surface colors
     --bg-primary: #0f0f0f;
     --bg-secondary: #1a1a1a;
     --bg-tertiary: #2a2a2a;
+
+    // Text colors
     --text-primary: #f9fafb;
     --text-secondary: #9ca3af;
     --text-muted: #6b7280;
+
+    // Accent colors
     --accent: #3b82f6;
     --accent-hover: #2563eb;
+
+    // Semantic colors
     --border: #374151;
     --success: #10b981;
     --error: #ef4444;
+
+    // Rarity tier colors
+    --rarity-legendary: #fbbf24;
+    --rarity-epic: #a855f7;
+    --rarity-rare: #3b82f6;
+    --rarity-uncommon: #22c55e;
+    --rarity-common: var(--text-secondary);
+
+    // Glass/overlay surfaces
+    --glass-bg: rgba(28, 28, 28, 0.95);
+    --glass-bg-heavy: rgba(28, 28, 28, 0.98);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-border-subtle: rgba(255, 255, 255, 0.06);
+    --glass-highlight: rgba(255, 255, 255, 0.05);
+    --glass-highlight-hover: rgba(255, 255, 255, 0.08);
+    --glass-highlight-active: rgba(255, 255, 255, 0.1);
+    --glass-highlight-strong: rgba(255, 255, 255, 0.15);
+    --glass-highlight-intense: rgba(255, 255, 255, 0.2);
+
+    // Shadows
+    --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 8px 25px rgba(0, 0, 0, 0.3);
+
+    // Component tokens
+    --card-radius: 8px;
+    --badge-radius: 4px;
+    --panel-radius: 6px;
+    --badge-bg: rgba(0, 0, 0, 0.7);
+    --chip-bg: rgba(59, 130, 246, 0.15);
+    --chip-border: rgba(59, 130, 246, 0.3);
+    --focus-border: rgba(59, 130, 246, 0.5);
+    --pct-bg: var(--glass-highlight-active);
 }
 
 * {
@@ -95,9 +135,9 @@ a {
     position: sticky;
     top: 0;
     z-index: 100;
-    background: rgba(28, 28, 28, 0.95);
+    background: var(--glass-bg);
     backdrop-filter: blur(10px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 1px solid var(--glass-border);
     padding: 12px 16px;
     font-family:
         -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -147,9 +187,9 @@ a {
 
 .rarity-algo-toggle {
     display: flex;
-    border-radius: 4px;
+    border-radius: var(--badge-radius);
     overflow: hidden;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border);
 
     .algo-btn {
         font-size: 12px;
@@ -163,11 +203,11 @@ a {
             color 0.15s;
 
         &:not(:last-child) {
-            border-right: 1px solid var(--border-color);
+            border-right: 1px solid var(--border);
         }
 
         &.active {
-            background: var(--accent-color);
+            background: var(--accent);
             color: #fff;
         }
 
@@ -180,15 +220,30 @@ a {
 .sort-select {
     font-size: 13px;
     padding: 4px 8px;
-    border-radius: 4px;
-    border: 1px solid var(--border-color);
+    border-radius: var(--badge-radius);
+    border: 1px solid var(--border);
     background: var(--bg-secondary);
     color: var(--text-primary);
     cursor: pointer;
 
     &:focus {
         outline: none;
-        border-color: var(--accent-color);
+        border-color: var(--accent);
+    }
+}
+
+.theme-toggle {
+    font-size: 13px;
+    padding: 4px 8px;
+    border-radius: var(--badge-radius);
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+
+    &:focus {
+        outline: none;
+        border-color: var(--accent);
     }
 }
 
@@ -206,16 +261,16 @@ a {
     gap: 8px;
     margin-top: 10px;
     padding-top: 10px;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    border-top: 1px solid var(--glass-border-subtle);
 }
 
 .filter-chip {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    background: rgba(59, 130, 246, 0.15);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    border-radius: 4px;
+    background: var(--chip-bg);
+    border: 1px solid var(--chip-border);
+    border-radius: var(--badge-radius);
     padding: 4px 6px;
     font-size: 12px;
 }
@@ -264,7 +319,7 @@ a {
 .gallery-search {
     margin-top: 10px;
     padding-top: 10px;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    border-top: 1px solid var(--glass-border-subtle);
 }
 
 .search-container {
@@ -275,9 +330,9 @@ a {
 .search-input {
     width: 100%;
     padding: 6px 10px;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
+    background: var(--glass-border-subtle);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--badge-radius);
     color: var(--text-primary);
     font-size: 13px;
     font-family: inherit;
@@ -291,8 +346,8 @@ a {
     }
 
     &:focus {
-        background: rgba(255, 255, 255, 0.08);
-        border-color: rgba(59, 130, 246, 0.5);
+        background: var(--glass-highlight-hover);
+        border-color: var(--focus-border);
     }
 }
 
@@ -302,10 +357,10 @@ a {
     left: 0;
     right: 0;
     margin-top: 4px;
-    background: rgba(28, 28, 28, 0.98);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    background: var(--glass-bg-heavy);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--badge-radius);
+    box-shadow: var(--shadow-sm);
     max-height: 280px;
     overflow-y: auto;
     z-index: 200;
@@ -332,11 +387,11 @@ a {
 
     &:hover,
     &.selected {
-        background: rgba(59, 130, 246, 0.15);
+        background: var(--chip-bg);
     }
 
     &.selected {
-        background: rgba(59, 130, 246, 0.2);
+        background: var(--chip-border);
     }
 }
 
@@ -361,7 +416,7 @@ a {
     font-size: 11px;
     color: var(--text-secondary);
     padding: 2px 6px;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--glass-highlight-hover);
     border-radius: 3px;
     flex-shrink: 0;
 }
@@ -413,21 +468,17 @@ a {
     }
 }
 
-// Infinite grid - simple CSS grid with progressive loading
-.infinite-grid {
+// Static grid - all cards rendered upfront, CSS handles filter/sort
+.static-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
     gap: 1rem;
     padding: 1rem;
 }
 
-.infinite-grid-sentinel {
-    grid-column: 1 / -1;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    padding: 2rem;
-}
+// Filtering is handled by dynamic <style> rules injected per active filter:
+// .static-grid .nft-card:not(.b{bit_index}) { display: none; }
+// Sort order is handled similarly via #token-{index} { order: N; }
 
 // Legacy gallery grid (kept for fallback)
 .gallery-grid {
@@ -440,16 +491,20 @@ a {
 // NFT Card
 .nft-card {
     background: var(--bg-secondary);
-    border-radius: 8px;
+    border-radius: var(--card-radius);
     overflow: hidden;
     transition:
         transform 0.2s,
         box-shadow 0.2s;
     display: block;
+    // Lazy render off-screen cards — browser skips layout/paint/image fetch
+    // until the card is near the viewport
+    content-visibility: auto;
+    contain-intrinsic-size: auto 200px auto 260px;
 
     &:hover {
         transform: translateY(-4px);
-        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+        box-shadow: var(--shadow-lg);
     }
 
     img {
@@ -481,13 +536,33 @@ a {
         left: 6px;
         font-size: 0.65rem;
         font-weight: 600;
-        background: rgba(0, 0, 0, 0.7);
+        background: var(--badge-bg);
+        color: #ffffff;
         padding: 2px 6px;
-        border-radius: 4px;
+        border-radius: var(--badge-radius);
         backdrop-filter: blur(4px);
         display: flex;
         align-items: center;
         gap: 3px;
+        border: 1px solid rgba(255, 255, 255, 0.4);
+        border-right: 4px solid currentColor;
+
+        // Rarity color applies to the right border accent
+        &.rarity-legendary {
+            border-right-color: var(--rarity-legendary);
+        }
+        &.rarity-epic {
+            border-right-color: var(--rarity-epic);
+        }
+        &.rarity-rare {
+            border-right-color: var(--rarity-rare);
+        }
+        &.rarity-uncommon {
+            border-right-color: var(--rarity-uncommon);
+        }
+        &.rarity-common {
+            border-right-color: var(--rarity-common);
+        }
 
         svg {
             width: 0.7em;
@@ -513,19 +588,19 @@ a {
 
 // Rarity color tiers
 .rarity-legendary {
-    color: #fbbf24 !important; // Gold
+    color: var(--rarity-legendary);
 }
 .rarity-epic {
-    color: #a855f7 !important; // Purple
+    color: var(--rarity-epic);
 }
 .rarity-rare {
-    color: #3b82f6 !important; // Blue
+    color: var(--rarity-rare);
 }
 .rarity-uncommon {
-    color: #22c55e !important; // Green
+    color: var(--rarity-uncommon);
 }
 .rarity-common {
-    color: var(--text-secondary) !important;
+    color: var(--rarity-common);
 }
 
 // Tweakpane-style detail view
@@ -585,12 +660,12 @@ a {
     width: 300px;
     max-height: calc(100vh - 2rem);
     overflow-y: auto;
-    background: rgba(28, 28, 28, 0.95);
-    border-radius: 6px;
+    background: var(--glass-bg);
+    border-radius: var(--panel-radius);
     font-size: 13px;
     font-family:
         -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--shadow-md);
     backdrop-filter: blur(10px);
 
     // Custom scrollbar
@@ -611,8 +686,8 @@ a {
     align-items: center;
     gap: 0.5rem;
     padding: 8px 10px;
-    background: rgba(255, 255, 255, 0.05);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--glass-highlight);
+    border-bottom: 1px solid var(--glass-border);
 
     .tp-header-spinner {
         margin-left: auto;
@@ -634,7 +709,7 @@ a {
 
 .tp-back {
     padding: 4px 8px;
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--glass-highlight-active);
     border-radius: 3px;
     color: var(--text-secondary);
     font-size: 11px;
@@ -642,7 +717,7 @@ a {
     letter-spacing: 0.5px;
 
     &:hover {
-        background: rgba(255, 255, 255, 0.15);
+        background: var(--glass-highlight-strong);
         color: var(--text-primary);
     }
 }
@@ -658,7 +733,7 @@ a {
 
 .tp-section {
     padding: 8px 10px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid var(--glass-border-subtle);
 
     &:last-child {
         border-bottom: none;
@@ -687,13 +762,13 @@ a {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
+    background: var(--glass-highlight-active);
+    border-radius: var(--badge-radius);
     color: var(--text-primary);
     font-size: 12px;
 
     &:hover:not(.disabled) {
-        background: rgba(255, 255, 255, 0.2);
+        background: var(--glass-highlight-intense);
     }
 
     &.disabled {
@@ -767,7 +842,7 @@ a {
     transition: background 0.15s;
 
     &:hover {
-        background: rgba(255, 255, 255, 0.08);
+        background: var(--glass-highlight-hover);
 
         .tp-value {
             color: var(--accent);
@@ -777,13 +852,30 @@ a {
     .tp-value,
     .tp-pct {
         color: inherit;
+
+        // Preserve rarity tier coloring on trait values
+        &.rarity-legendary {
+            color: var(--rarity-legendary);
+        }
+        &.rarity-epic {
+            color: var(--rarity-epic);
+        }
+        &.rarity-rare {
+            color: var(--rarity-rare);
+        }
+        &.rarity-uncommon {
+            color: var(--rarity-uncommon);
+        }
+        &.rarity-common {
+            color: var(--rarity-common);
+        }
     }
 }
 
 .tp-pct {
     font-size: 11px;
     padding: 2px 6px;
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--pct-bg);
     border-radius: 3px;
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
@@ -800,7 +892,7 @@ a {
 
     // Only show border after last row in group
     &:not(:last-child) {
-        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        border-bottom: 1px solid var(--glass-border-subtle);
     }
 }
 
@@ -812,7 +904,7 @@ a {
 .tp-attributes {
     .tp-row {
         padding: 6px 0;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        border-bottom: 1px solid var(--glass-border-subtle);
 
         &:last-child {
             border-bottom: none;
@@ -968,3 +1060,6 @@ a {
         color: var(--text-secondary);
     }
 }
+
+// Theme imports
+@import "themes/brutalist";
