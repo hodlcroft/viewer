@@ -8,6 +8,7 @@ set -euo pipefail
 #
 # Uploads to R2:
 #   collections/<slug>/collection.bin
+#   collections/<slug>/sprites.bin
 #   collections/<slug>/sprites/0000.webp, 0001.webp, ...
 #   collections/<slug>/hcf/images_000.hcf, images_001.hcf, ...
 #
@@ -73,6 +74,11 @@ if [ ! -f "$BUILD_DIR/collection.bin" ]; then
     exit 1
 fi
 
+if [ ! -f "$BUILD_DIR/sprites.bin" ]; then
+    echo "Error: sprites.bin not found in $BUILD_DIR"
+    exit 1
+fi
+
 if [ ! -d "$BUILD_DIR/sprites" ]; then
     echo "Error: sprites directory not found in $BUILD_DIR"
     exit 1
@@ -102,6 +108,9 @@ echo "Bundle contents:"
 SIZE=$(du -h "$BUILD_DIR/collection.bin" | cut -f1)
 echo "   collection.bin: $SIZE"
 
+SPRITES_BIN_SIZE=$(du -h "$BUILD_DIR/sprites.bin" | cut -f1)
+echo "   sprites.bin: $SPRITES_BIN_SIZE"
+
 SPRITE_TOTAL=$(du -ch "$BUILD_DIR"/sprites/*.webp | tail -1 | cut -f1)
 echo "   sprites/: $SPRITE_COUNT files ($SPRITE_TOTAL)"
 
@@ -114,10 +123,16 @@ R2_PREFIX="collections/$SLUG"
 
 echo "Uploading to R2..."
 
-# Upload collection.bin first (single file)
+# Upload collection.bin and sprites.bin
 echo "   Uploading collection.bin..."
 wrangler r2 object put "$R2_BUCKET/$R2_PREFIX/collection.bin" \
     --file "$BUILD_DIR/collection.bin" \
+    --content-type "application/octet-stream" \
+    --remote
+
+echo "   Uploading sprites.bin..."
+wrangler r2 object put "$R2_BUCKET/$R2_PREFIX/sprites.bin" \
+    --file "$BUILD_DIR/sprites.bin" \
     --content-type "application/octet-stream" \
     --remote
 
@@ -156,6 +171,7 @@ echo "Publishing complete!"
 echo ""
 echo "R2 locations:"
 echo "   $R2_BUCKET/$R2_PREFIX/collection.bin"
+echo "   $R2_BUCKET/$R2_PREFIX/sprites.bin"
 echo "   $R2_BUCKET/$R2_PREFIX/sprites/ ($SPRITE_COUNT files)"
 echo "   $R2_BUCKET/$R2_PREFIX/hcf/ ($HCF_COUNT files)"
 echo ""

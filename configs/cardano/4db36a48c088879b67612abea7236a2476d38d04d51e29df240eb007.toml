@@ -1,0 +1,19 @@
+slug = "aliens"
+name = "Zombie Fight Club Aliens"
+
+[pinata]
+enabled = false
+group_id = "2b2ee5f2-9dfe-4fb9-8a53-3d2f941b5494"
+
+[images]
+# source = "ipfs"
+# gateways = ["dweb", "pinata"]
+source = "nftcdn"
+# source = "pinata"
+
+[traits]
+ignore = []
+
+[rarity]
+hide = true
+exclude = []
