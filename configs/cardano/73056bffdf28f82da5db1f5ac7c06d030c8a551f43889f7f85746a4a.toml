@@ -1,0 +1,11 @@
+# Derp Birds - PRED
+# Policy ID: 73056bffdf28f82da5db1f5ac7c06d030c8a551f43889f7f85746a4a
+
+slug = "preds"
+name = "Derp Birds - PRED"
+
+[traits]
+ignore = []
+
+[rarity]
+exclude = []

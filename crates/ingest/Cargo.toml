@@ -11,6 +11,7 @@ viewer-format = { workspace = true }
 viewer-binary = { workspace = true }
 cnft_tools = { workspace = true }
 cardano-assets = { workspace = true, features = ["cip14"] }
+filebase_sdk = { workspace = true }
 
 tokio = { workspace = true }
 reqwest = { workspace = true }

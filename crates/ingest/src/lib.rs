@@ -12,6 +12,7 @@ pub mod analyze;
 pub mod bundle;
 pub mod cid_compute;
 pub mod fetch;
+pub mod filebase;
 pub mod ipfs;
 pub mod nftcdn;
 pub mod normalize;
@@ -34,6 +35,7 @@ pub use nftcdn::{NftcdnClient, NftcdnError};
 pub use normalize::{
     BatchNormalizer, NormalizeConfig, NormalizeError, NormalizeResult, normalize_image,
 };
+pub use filebase::{FilebaseClient, FilebaseError, PinItem, PinResult};
 pub use pinata::{PinataClient, PinataError};
 pub use pipeline::{CollectionDirs, Pipeline, PipelineConfig, PipelineState};
 pub use source::{AssetSource, CnftToolsSource, NormalizedAsset};

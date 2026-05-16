@@ -4,7 +4,14 @@
       "mcp__acp__Edit",
       "mcp__acp__Bash",
       "WebFetch(domain:polyformproject.org)",
-      "mcp__acp__Write"
+      "mcp__acp__Write",
+      "Bash(ls /Users/damo/code/hodlcroft/viewer/crates/ /Users/damo/code/hodlcroft/viewer/worker/ 2>&1; ls /Users/damo/code/defrag/shared-crates 2>&1 | head -40)",
+      "Bash(mkdir -p /Users/damo/code/defrag/shared-crates/filebase/src)",
+      "Bash(cargo build *)",
+      "Read(//Users/damo/.cargo/bin/**)",
+      "Read(//opt/homebrew/bin/**)",
+      "Bash(nix develop *)",
+      "Bash(grep -rEl \"FILEBASE_API_TOKEN\" /Users/damo/code/hodlcroft/viewer/ ~/.config/direnv 2>/dev/null; grep -E \"FILEBASE\" /Users/damo/code/hodlcroft/viewer/.envrc 2>&1; ls /Users/damo/code/hodlcroft/viewer/.env.* /Users/damo/code/hodlcroft/viewer/.envrc.local 2>&1)"
     ]
   }
 }

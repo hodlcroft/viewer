@@ -1,0 +1,11 @@
+# Derp Bird Outposts
+# Policy ID: a2e719d70b9d71636aa825e71c11ca508ecf98eec87182b0e526d7c5
+
+slug = "derp-outposts"
+name = "Derp Bird Outposts"
+
+[traits]
+ignore = []
+
+[rarity]
+exclude = []

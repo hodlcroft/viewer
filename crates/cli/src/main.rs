@@ -42,6 +42,12 @@ enum Commands {
         action: PinataAction,
     },
 
+    /// Filebase operations (experimental — DHT republishing trials)
+    Filebase {
+        #[command(subcommand)]
+        action: FilebaseAction,
+    },
+
     /// CID analysis and computation
     Cid {
         #[command(subcommand)]
@@ -97,6 +103,33 @@ enum PinataAction {
 }
 
 #[derive(Subcommand)]
+enum FilebaseAction {
+    /// Pin every on-chain CID for a collection to the Filebase bucket
+    /// associated with FILEBASE_API_TOKEN.
+    Pin {
+        /// Policy ID of the collection
+        policy_id: String,
+
+        /// Path to config file (default: configs/cardano/{policy_id}.toml)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// List CIDs that would be pinned without sending requests
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Pin at most N CIDs (useful for smoke-testing the experiment)
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Override inter-request delay in milliseconds. Default is 50ms
+        /// (20 req/s). Use 0 to disable pacing entirely.
+        #[arg(long)]
+        delay_ms: Option<u64>,
+    },
+}
+
+#[derive(Subcommand)]
 enum CidAction {
     /// Analyze CIDs from a collection and compare with local files
     Check {
@@ -122,6 +155,14 @@ enum CidAction {
     Info {
         /// CID string to analyze
         cid: String,
+    },
+
+    /// Report assets that share an extracted CID with another asset.
+    /// Use to verify whether collisions are real duplicates in the source
+    /// or an artefact of our CID extraction.
+    Duplicates {
+        /// Policy ID of the collection
+        policy_id: String,
     },
 }
 
@@ -199,6 +240,15 @@ async fn main() -> anyhow::Result<()> {
                 dry_run,
             } => cmd_pinata_clean(&policy_id, config, dry_run).await,
         },
+        Commands::Filebase { action } => match action {
+            FilebaseAction::Pin {
+                policy_id,
+                config,
+                dry_run,
+                limit,
+                delay_ms,
+            } => cmd_filebase_pin(&policy_id, config, dry_run, limit, delay_ms).await,
+        },
         Commands::Cid { action } => match action {
             CidAction::Check {
                 policy_id,
@@ -206,6 +256,7 @@ async fn main() -> anyhow::Result<()> {
             } => cmd_cid_check(&policy_id, local_dir).await,
             CidAction::Compute { path, target } => cmd_cid_compute(&path, target),
             CidAction::Info { cid } => cmd_cid_info(&cid),
+            CidAction::Duplicates { policy_id } => cmd_cid_duplicates(&policy_id).await,
         },
         Commands::Dump { path, token } => cmd_dump(&path, token.as_deref()),
     }
@@ -1599,6 +1650,148 @@ async fn cmd_pinata_clean(
     Ok(())
 }
 
+/// Pin every on-chain CID for a collection to the Filebase bucket associated
+/// with FILEBASE_API_TOKEN. Experimental — used to evaluate DHT republishing
+/// relative to Pinata.
+async fn cmd_filebase_pin(
+    policy_id: &str,
+    config_path: Option<PathBuf>,
+    dry_run: bool,
+    limit: Option<usize>,
+    delay_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+    use viewer_ingest::{AssetSource, CnftToolsSource, FilebaseClient, PinItem, extract_cid};
+
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(false)
+        .init();
+
+    let config = load_cardano_config(policy_id, config_path.clone())?;
+    let slug = config.slug.clone();
+
+    println!("Filebase pin for: {}", policy_id);
+
+    println!("Fetching collection metadata...");
+    let source = CnftToolsSource::new();
+    let assets = source.fetch_collection(policy_id).await?;
+    println!("  Found {} assets", assets.len());
+
+    // Build a deterministic CID -> display_name map. Deduplicates the same CID
+    // shared across multiple tokens (rare but possible).
+    let mut cids: BTreeMap<String, String> = BTreeMap::new();
+    let mut no_image_url = 0usize;
+    let mut no_cid = 0usize;
+    for asset in &assets {
+        let Some(image_url) = asset.image_url.as_ref() else {
+            no_image_url += 1;
+            continue;
+        };
+        let Some(cid) = extract_cid(image_url) else {
+            no_cid += 1;
+            continue;
+        };
+        cids.entry(cid)
+            .or_insert_with(|| asset.display_name.clone());
+    }
+
+    println!("  CIDs to pin: {}", cids.len());
+    if no_image_url > 0 || no_cid > 0 {
+        println!(
+            "  Skipped: {} without image_url, {} without extractable CID",
+            no_image_url, no_cid
+        );
+    }
+
+    let mut items: Vec<PinItem> = cids
+        .into_iter()
+        .map(|(cid, display_name)| {
+            let mut meta = BTreeMap::new();
+            if let Some(ref s) = slug {
+                meta.insert("slug".to_string(), s.clone());
+            }
+            meta.insert("policy_id".to_string(), policy_id.to_string());
+            meta.insert("asset_name".to_string(), display_name.clone());
+            PinItem {
+                name: format!("{}/{}", policy_id, display_name),
+                cid,
+                meta,
+            }
+        })
+        .collect();
+
+    if let Some(limit) = limit {
+        items.truncate(limit);
+        println!("  Limited to first {}", items.len());
+    }
+
+    if items.is_empty() {
+        println!("Nothing to pin.");
+        return Ok(());
+    }
+
+    if dry_run {
+        println!("\nDRY RUN — would pin:");
+        for item in items.iter().take(10) {
+            println!("  {} → {}", item.name, item.cid);
+        }
+        if items.len() > 10 {
+            println!("  ... and {} more", items.len() - 10);
+        }
+        return Ok(());
+    }
+
+    println!("\nConnecting to Filebase...");
+    let mut client = FilebaseClient::from_env()?;
+    if let Some(ms) = delay_ms {
+        println!("  Inter-request delay: {}ms", ms);
+        client = client.with_delay(Duration::from_millis(ms));
+    }
+
+    use indicatif::{ProgressBar, ProgressStyle};
+    let pb = ProgressBar::new(items.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let results = client
+        .pin_cids(
+            &items,
+            Some(&|done, _total, result| {
+                pb.set_position(done as u64);
+                let label = match &result.outcome {
+                    Ok(r) => format!("{} [{}]", result.name, r.status),
+                    Err(e) => format!("{} (failed: {})", result.name, e),
+                };
+                pb.set_message(label);
+            }),
+        )
+        .await;
+
+    pb.finish_and_clear();
+
+    let succeeded = results.iter().filter(|r| r.outcome.is_ok()).count();
+    let failed = results.len() - succeeded;
+
+    println!("\nFilebase pin complete:");
+    println!("  Pinned: {}", succeeded);
+    if failed > 0 {
+        println!("  Failed: {}", failed);
+        for r in results.iter().filter(|r| r.outcome.is_err()).take(10) {
+            if let Err(e) = &r.outcome {
+                println!("    {} ({}): {}", r.name, r.cid, e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn cmd_dump(path: &PathBuf, token_filter: Option<&str>) -> anyhow::Result<()> {
     use viewer_binary::{HEADER_SIZE, Header, TOKEN_FIXED_SIZE, TraitSchema};
 
@@ -2021,6 +2214,77 @@ async fn cmd_cid_check(policy_id: &str, local_dir: Option<PathBuf>) -> anyhow::R
 
         if unmatched > 0 {
             anyhow::bail!("{} assets have invalid CIDs", unmatched);
+        }
+    }
+
+    Ok(())
+}
+
+/// Report duplicate-CID groups for a collection.
+///
+/// Groups assets by their extracted CID. For any CID claimed by more than
+/// one asset, prints the asset names alongside their raw image URLs — so we
+/// can tell at a glance whether the source data is genuinely sharing CIDs
+/// or whether `extract_cid` is mis-parsing different URLs to the same value.
+async fn cmd_cid_duplicates(policy_id: &str) -> anyhow::Result<()> {
+    use std::collections::BTreeMap;
+    use viewer_ingest::{AssetSource, CnftToolsSource, extract_cid};
+
+    println!("Fetching collection metadata for: {}", policy_id);
+    let source = CnftToolsSource::new();
+    let assets = source.fetch_collection(policy_id).await?;
+    println!("  Found {} assets\n", assets.len());
+
+    // Group by extracted CID, retaining all (display_name, image_url) tuples.
+    let mut by_cid: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut no_image_url = 0usize;
+    let mut no_cid = 0usize;
+
+    for asset in &assets {
+        let Some(image_url) = asset.image_url.as_ref() else {
+            no_image_url += 1;
+            continue;
+        };
+        let Some(cid) = extract_cid(image_url) else {
+            no_cid += 1;
+            continue;
+        };
+        by_cid
+            .entry(cid)
+            .or_default()
+            .push((asset.display_name.clone(), image_url.clone()));
+    }
+
+    let duplicates: Vec<_> = by_cid.iter().filter(|(_, v)| v.len() > 1).collect();
+
+    println!("Summary:");
+    println!("  Assets with extractable CID: {}", assets.len() - no_image_url - no_cid);
+    println!("  Unique CIDs:                 {}", by_cid.len());
+    println!("  CIDs shared by >1 asset:     {}", duplicates.len());
+    if no_image_url > 0 || no_cid > 0 {
+        println!(
+            "  Skipped:                     {} no image_url, {} unparseable",
+            no_image_url, no_cid
+        );
+    }
+
+    if duplicates.is_empty() {
+        println!("\nNo duplicate CIDs.");
+        return Ok(());
+    }
+
+    println!("\nDuplicate groups:");
+    for (cid, assets) in &duplicates {
+        println!("  {} ({} assets)", cid, assets.len());
+
+        // Identify whether the raw image_urls are byte-identical or differ.
+        let first_url = &assets[0].1;
+        let all_same = assets.iter().all(|(_, u)| u == first_url);
+        let url_marker = if all_same { "same url" } else { "differing urls" };
+        println!("    [{}]", url_marker);
+
+        for (name, url) in assets.iter() {
+            println!("    - {} -> {}", name, url);
         }
     }
 

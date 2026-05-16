@@ -66,15 +66,19 @@ gloo-timers = "0.3"
 js-sys = "0.3"
 
 # shared-crates (all pinned to same rev)
-worker_utils = { git = "https://github.com/defrag-au/shared-crates", package = "worker_utils", rev = "029ac72" }
-worker_stack = { git = "https://github.com/defrag-au/shared-crates", package = "worker_stack", rev = "029ac72" }
-test_utils = { git = "https://github.com/defrag-au/shared-crates", package = "test_utils", rev = "029ac72" }
-cnft_tools = { git = "https://github.com/defrag-au/shared-crates", package = "cnft_tools", rev = "029ac72" }
-cardano-assets = { git = "https://github.com/defrag-au/shared-crates", rev = "029ac72" }
-asset-rarity = { git = "https://github.com/defrag-au/shared-crates", rev = "029ac72" }
-wallet-leptos = { git = "https://github.com/defrag-au/shared-crates", rev = "029ac72" }
-wallet-pallas = { git = "https://github.com/defrag-au/shared-crates", rev = "029ac72" }
-wallet-core = { git = "https://github.com/defrag-au/shared-crates", rev = "029ac72" }
+worker_utils = { git = "https://github.com/defrag-au/shared-crates", package = "worker_utils", rev = "578f871a85dcea4384ae7741bb9eaf2c53713af6" }
+worker_stack = { git = "https://github.com/defrag-au/shared-crates", package = "worker_stack", rev = "578f871a85dcea4384ae7741bb9eaf2c53713af6" }
+test_utils = { git = "https://github.com/defrag-au/shared-crates", package = "test_utils", rev = "578f871a85dcea4384ae7741bb9eaf2c53713af6" }
+cnft_tools = { git = "https://github.com/defrag-au/shared-crates", package = "cnft_tools", rev = "578f871a85dcea4384ae7741bb9eaf2c53713af6" }
+cardano-assets = { git = "https://github.com/defrag-au/shared-crates", rev = "578f871a85dcea4384ae7741bb9eaf2c53713af6" }
+asset-rarity = { git = "https://github.com/defrag-au/shared-crates", rev = "578f871a85dcea4384ae7741bb9eaf2c53713af6" }
+wallet-leptos = { git = "https://github.com/defrag-au/shared-crates", rev = "578f871a85dcea4384ae7741bb9eaf2c53713af6" }
+wallet-pallas = { git = "https://github.com/defrag-au/shared-crates", rev = "578f871a85dcea4384ae7741bb9eaf2c53713af6" }
+wallet-core = { git = "https://github.com/defrag-au/shared-crates", rev = "578f871a85dcea4384ae7741bb9eaf2c53713af6" }
+
+# Local path during the Filebase experiment; promote to git rev once landed in shared-crates.
+# Renamed to avoid collision with the local `filebase` module in viewer-ingest.
+filebase_sdk = { package = "filebase", path = "../../defrag/shared-crates/filebase" }
 
 # shared-ui (for ui-core)
 ui-core = { git = "https://github.com/defrag-au/shared-ui", rev = "24cc859" }
