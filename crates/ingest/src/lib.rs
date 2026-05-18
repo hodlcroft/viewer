@@ -11,6 +11,7 @@
 pub mod analyze;
 pub mod bundle;
 pub mod cid_compute;
+pub mod cid_index;
 pub mod fetch;
 pub mod filebase;
 pub mod ipfs;
@@ -28,6 +29,7 @@ pub use bundle::{HcfBundleResult, HcfBundler, HcfConfig, HcfError, ImageLocation
 pub use cid_compute::{
     CidInfo, ComputedCid, compute_cid, compute_cid_bytes, find_matching_cid, parse_cid_info,
 };
+pub use cid_index::{CidIndexClient, CidIndexError, CidIndexStatus, PolicyCidIndex};
 pub use fetch::{
     FetchResult, fetch_images, fetch_images_iiif, fetch_images_nftcdn, fetch_thumbnails_pinata,
 };
@@ -39,7 +41,9 @@ pub use nftcdn::{NftcdnClient, NftcdnError};
 pub use normalize::{
     BatchNormalizer, NormalizeConfig, NormalizeError, NormalizeResult, normalize_image,
 };
-pub use filebase::{FilebaseClient, FilebaseError, PinItem, PinResult};
+pub use filebase::{
+    FilebaseClient, FilebaseError, PinItem, PinRecord, PinResult, PinStatusCounts,
+};
 pub use pinata::{PinataClient, PinataError};
 pub use pipeline::{CollectionDirs, Pipeline, PipelineConfig, PipelineState};
 pub use source::{AssetSource, CnftToolsSource, NormalizedAsset};

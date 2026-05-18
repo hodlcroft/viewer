@@ -9,7 +9,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-use filebase_sdk::{FilebaseApi, FilebaseError as ApiError, PinByCidResponse};
+use filebase_sdk::{FilebaseApi, FilebaseError as ApiError, PinByCidResponse, PinListQuery};
 
 /// Default delay between successive pin requests (20 req/s).
 ///
@@ -49,6 +49,30 @@ pub struct PinResult {
     pub cid: String,
     pub name: String,
     pub outcome: Result<PinByCidResponse, String>,
+}
+
+/// A single pin record, projected from a `GET /pins` entry.
+#[derive(Debug, Clone)]
+pub struct PinRecord {
+    pub requestid: String,
+    pub cid: String,
+    pub status: String,
+}
+
+/// Pin counts by Pinning Service status for a single collection.
+#[derive(Debug, Default, Clone)]
+pub struct PinStatusCounts {
+    pub queued: u32,
+    pub pinning: u32,
+    pub pinned: u32,
+    pub failed: u32,
+}
+
+impl PinStatusCounts {
+    /// Total pins across all statuses.
+    pub fn total(&self) -> u32 {
+        self.queued + self.pinning + self.pinned + self.failed
+    }
 }
 
 /// Native Filebase client wrapping the shared crate's `FilebaseApi`.
@@ -166,5 +190,152 @@ impl FilebaseClient {
         info!(succeeded, failed = total - succeeded, total, "Filebase batch complete");
 
         results
+    }
+
+    /// Tally pins for a collection by Pinning Service status.
+    ///
+    /// Issues one `GET /pins` count query per status, scoped to the
+    /// collection by partial-matching the `{policy_id}/` name prefix every
+    /// pin carries. Cheap — `count` is returned regardless of page size, so
+    /// each query uses `limit=1`.
+    pub async fn status_counts(
+        &self,
+        policy_id: &str,
+    ) -> Result<PinStatusCounts, FilebaseError> {
+        let mut counts = PinStatusCounts::default();
+        for status in ["queued", "pinning", "pinned", "failed"] {
+            let query = PinListQuery {
+                status: Some(status.to_string()),
+                name: Some(format!("{policy_id}/")),
+                name_match: Some("partial".to_string()),
+                limit: 1,
+                ..Default::default()
+            };
+            let resp = self.api.list_pins(&query).await?;
+            match status {
+                "queued" => counts.queued = resp.count,
+                "pinning" => counts.pinning = resp.count,
+                "pinned" => counts.pinned = resp.count,
+                "failed" => counts.failed = resp.count,
+                _ => unreachable!(),
+            }
+        }
+        Ok(counts)
+    }
+
+    /// List every pin for a collection, paging through `GET /pins`.
+    ///
+    /// Pages newest-first via the `before` cursor; entries are deduplicated
+    /// by request id to absorb any timestamp-boundary overlap between pages.
+    pub async fn list_all_pins(
+        &self,
+        policy_id: &str,
+    ) -> Result<Vec<PinRecord>, FilebaseError> {
+        use std::collections::HashSet;
+
+        const PAGE: u32 = 1000;
+        let mut records = Vec::new();
+        let mut seen = HashSet::new();
+        let mut before: Option<String> = None;
+
+        loop {
+            let query = PinListQuery {
+                name: Some(format!("{policy_id}/")),
+                name_match: Some("partial".to_string()),
+                before: before.clone(),
+                limit: PAGE,
+                ..Default::default()
+            };
+            let resp = self.api.list_pins(&query).await?;
+            let page_len = resp.results.len();
+            let oldest = resp.results.last().map(|e| e.created.clone());
+
+            let before_count = records.len();
+            for entry in resp.results {
+                if seen.insert(entry.requestid.clone()) {
+                    records.push(PinRecord {
+                        requestid: entry.requestid,
+                        cid: entry.pin.cid,
+                        status: entry.status,
+                    });
+                }
+            }
+
+            // Stop on a short page, or if a full page yielded no new records
+            // (a pathological all-same-timestamp boundary) to avoid looping.
+            if page_len < PAGE as usize || records.len() == before_count {
+                break;
+            }
+            match oldest {
+                Some(ts) => before = Some(ts),
+                None => break,
+            }
+        }
+
+        Ok(records)
+    }
+
+    /// Delete a batch of pins by request id, pacing and retrying transient
+    /// failures. Per-item errors are captured rather than aborting the batch.
+    pub async fn delete_pins(
+        &self,
+        requestids: &[String],
+        on_progress: Option<&dyn Fn(usize, usize)>,
+    ) -> Vec<Result<(), String>> {
+        let total = requestids.len();
+        let mut out = Vec::with_capacity(total);
+
+        for (i, rid) in requestids.iter().enumerate() {
+            let result = self
+                .delete_pin_with_retry(rid)
+                .await
+                .map_err(|e| e.to_string());
+            if let Err(ref e) = result {
+                warn!(requestid = %rid, error = %e, "Filebase delete failed");
+            }
+            out.push(result);
+
+            if let Some(cb) = on_progress {
+                cb(i + 1, total);
+            }
+            if i + 1 < total && !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
+        }
+
+        let deleted = out.iter().filter(|r| r.is_ok()).count();
+        info!(deleted, failed = total - deleted, total, "Filebase delete batch complete");
+
+        out
+    }
+
+    /// Delete a single pin with automatic retry on transient failures.
+    async fn delete_pin_with_retry(&self, requestid: &str) -> Result<(), FilebaseError> {
+        let mut attempt = 0u32;
+        loop {
+            match self.api.delete_pin(requestid).await {
+                Ok(()) => return Ok(()),
+                Err(ApiError::Request(http_err))
+                    if matches!(
+                        http_err.status_code(),
+                        None | Some(429 | 502 | 503 | 504)
+                    ) =>
+                {
+                    attempt += 1;
+                    if attempt > MAX_RETRIES {
+                        return Err(FilebaseError::RetryExhausted {
+                            attempts: MAX_RETRIES,
+                            last: format!("{http_err:?}"),
+                        });
+                    }
+                    let wait = http_err
+                        .retry_after_seconds()
+                        .unwrap_or_else(|| 2u64.pow(attempt));
+                    debug!(requestid, attempt, wait, "Transient delete error, retrying");
+                    tokio::time::sleep(Duration::from_secs(wait)).await;
+                }
+                Err(e) => return Err(FilebaseError::Api(e)),
+            }
+        }
     }
 }

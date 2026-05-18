@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -143,18 +143,29 @@ enum FilebaseAction {
         /// (20 req/s). Use 0 to disable pacing entirely.
         #[arg(long)]
         delay_ms: Option<u64>,
-
-        /// Collection metadata source. Defaults to cnft.tools; fall back to
-        /// Maestro for collections cnft.tools doesn't index.
-        #[arg(long, value_enum, default_value_t = AssetSourceKind::Cnft)]
-        source: AssetSourceKind,
     },
-}
 
-#[derive(ValueEnum, Clone, Copy, Debug)]
-enum AssetSourceKind {
-    Cnft,
-    Maestro,
+    /// Report pin status counts for a collection on Filebase.
+    Status {
+        /// Policy ID of the collection
+        policy_id: String,
+    },
+
+    /// Remove legacy CIDv0 pins for a collection, but only where a
+    /// CIDv1 pin of the same content is already `pinned`. Previews by
+    /// default — pass --execute to actually delete.
+    PruneV0 {
+        /// Policy ID of the collection
+        policy_id: String,
+
+        /// Actually delete; without this the command only previews.
+        #[arg(long)]
+        execute: bool,
+
+        /// Delete at most N pins (applies only with --execute)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -278,8 +289,13 @@ async fn main() -> anyhow::Result<()> {
                 dry_run,
                 limit,
                 delay_ms,
-                source,
-            } => cmd_filebase_pin(&policy_id, config, dry_run, limit, delay_ms, source).await,
+            } => cmd_filebase_pin(&policy_id, config, dry_run, limit, delay_ms).await,
+            FilebaseAction::Status { policy_id } => cmd_filebase_status(&policy_id).await,
+            FilebaseAction::PruneV0 {
+                policy_id,
+                execute,
+                limit,
+            } => cmd_filebase_prune_v0(&policy_id, execute, limit).await,
         },
         Commands::Cid { action } => match action {
             CidAction::Check {
@@ -1691,13 +1707,10 @@ async fn cmd_filebase_pin(
     dry_run: bool,
     limit: Option<usize>,
     delay_ms: Option<u64>,
-    source: AssetSourceKind,
 ) -> anyhow::Result<()> {
     use std::collections::BTreeMap;
     use std::time::Duration;
-    use viewer_ingest::{
-        AssetSource, CnftToolsSource, FilebaseClient, MaestroSource, PinItem, extract_cid,
-    };
+    use viewer_ingest::{CidIndexClient, CidIndexStatus, FilebaseClient, PinItem};
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -1709,51 +1722,33 @@ async fn cmd_filebase_pin(
 
     println!("Filebase pin for: {}", policy_id);
 
-    println!("Fetching collection metadata via {:?}...", source);
-    let assets = match source {
-        AssetSourceKind::Cnft => CnftToolsSource::new().fetch_collection(policy_id).await?,
-        AssetSourceKind::Maestro => MaestroSource::from_env()?.fetch_collection(policy_id).await?,
-    };
-    println!("  Found {} assets", assets.len());
+    println!("Fetching CID index from ownership.cnft.dev...");
+    let index = CidIndexClient::new().fetch_all(policy_id).await?;
+    println!(
+        "  Index status: {:?} (generation {})",
+        index.status, index.cid_generation
+    );
+    println!("  CIDs to pin: {}", index.cids.len());
 
-    // Build a deterministic CID -> display_name map. Deduplicates the same CID
-    // shared across multiple tokens (rare but possible).
-    let mut cids: BTreeMap<String, String> = BTreeMap::new();
-    let mut no_image_url = 0usize;
-    let mut no_cid = 0usize;
-    for asset in &assets {
-        let Some(image_url) = asset.image_url.as_ref() else {
-            no_image_url += 1;
-            continue;
-        };
-        let Some(cid) = extract_cid(image_url) else {
-            no_cid += 1;
-            continue;
-        };
-        cids.entry(cid)
-            .or_insert_with(|| asset.display_name.clone());
+    if index.status != CidIndexStatus::Complete {
+        println!("  WARNING: index is not fully resolved — the CID set may be incomplete.");
     }
 
-    println!("  CIDs to pin: {}", cids.len());
-    if no_image_url > 0 || no_cid > 0 {
-        println!(
-            "  Skipped: {} without image_url, {} without extractable CID",
-            no_image_url, no_cid
-        );
-    }
-
-    let mut items: Vec<PinItem> = cids
-        .into_iter()
-        .map(|(cid, display_name)| {
+    // The CID index returns a deduplicated, CIDv1-normalised set, so pins are
+    // identified by CID alone. No per-asset names are available from this
+    // source — meta carries only policy_id and slug.
+    let mut items: Vec<PinItem> = index
+        .cids
+        .iter()
+        .map(|cid| {
             let mut meta = BTreeMap::new();
             if let Some(ref s) = slug {
                 meta.insert("slug".to_string(), s.clone());
             }
             meta.insert("policy_id".to_string(), policy_id.to_string());
-            meta.insert("asset_name".to_string(), display_name.clone());
             PinItem {
-                name: format!("{}/{}", policy_id, display_name),
-                cid,
+                name: format!("{}/{}", policy_id, cid),
+                cid: cid.clone(),
                 meta,
             }
         })
@@ -1822,6 +1817,146 @@ async fn cmd_filebase_pin(
         for r in results.iter().filter(|r| r.outcome.is_err()).take(10) {
             if let Err(e) = &r.outcome {
                 println!("    {} ({}): {}", r.name, r.cid, e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Report Filebase pin status counts for a collection.
+async fn cmd_filebase_status(policy_id: &str) -> anyhow::Result<()> {
+    use viewer_ingest::FilebaseClient;
+
+    println!("Filebase pin status for: {}", policy_id);
+
+    let client = FilebaseClient::from_env()?;
+    let counts = client.status_counts(policy_id).await?;
+
+    println!("  pinned:  {}", counts.pinned);
+    println!("  pinning: {}", counts.pinning);
+    println!("  queued:  {}", counts.queued);
+    println!("  failed:  {}", counts.failed);
+    println!("  -------");
+    println!("  total:   {}", counts.total());
+
+    let unresolved = counts.queued + counts.pinning + counts.failed;
+    if unresolved > 0 {
+        println!(
+            "\n{} pin(s) not yet resolved ({} queued, {} pinning, {} failed).",
+            unresolved, counts.queued, counts.pinning, counts.failed
+        );
+    } else if counts.total() > 0 {
+        println!("\nAll pins resolved.");
+    }
+
+    Ok(())
+}
+
+/// Remove legacy CIDv0 pins for a collection, but only where a `pinned`
+/// CIDv1 pin of the same content already exists. Previews by default.
+async fn cmd_filebase_prune_v0(
+    policy_id: &str,
+    execute: bool,
+    limit: Option<usize>,
+) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+    use viewer_ingest::{FilebaseClient, to_cidv1};
+
+    println!("Filebase prune-v0 for: {}", policy_id);
+
+    let client = FilebaseClient::from_env()?;
+
+    println!("Listing all pins...");
+    let pins = client.list_all_pins(policy_id).await?;
+    println!("  Total pins: {}", pins.len());
+
+    // CIDv0 always starts "Qm"; everything else is treated as v1+.
+    // Build a status map of the non-v0 pins keyed by CID.
+    let mut v1_status: HashMap<&str, &str> = HashMap::new();
+    let mut v0_pins = Vec::new();
+    for pin in &pins {
+        if pin.cid.starts_with("Qm") {
+            v0_pins.push(pin);
+        } else {
+            v1_status.insert(pin.cid.as_str(), pin.status.as_str());
+        }
+    }
+    println!("  CIDv0 pins: {}", v0_pins.len());
+    println!("  CIDv1 pins: {}", v1_status.len());
+
+    // Each v0 pin is deletable only if its v1 equivalent is pinned.
+    let mut eligible: Vec<(String, String)> = Vec::new(); // (requestid, v0 cid)
+    let mut skipped: Vec<(String, String)> = Vec::new(); // (v0 cid, reason)
+    for pin in &v0_pins {
+        match to_cidv1(&pin.cid) {
+            None => skipped.push((pin.cid.clone(), "cannot convert to CIDv1".to_string())),
+            Some(v1) => match v1_status.get(v1.as_str()) {
+                Some(&"pinned") => eligible.push((pin.requestid.clone(), pin.cid.clone())),
+                Some(other) => {
+                    skipped.push((pin.cid.clone(), format!("v1 sibling status={other}")))
+                }
+                None => skipped.push((pin.cid.clone(), "no v1 sibling pin".to_string())),
+            },
+        }
+    }
+
+    println!("\nEligible for deletion (v1 sibling pinned): {}", eligible.len());
+    println!("Skipped (unsafe to delete):                {}", skipped.len());
+
+    if !skipped.is_empty() {
+        println!("\nSkip reasons (first 10):");
+        for (cid, reason) in skipped.iter().take(10) {
+            println!("  {} — {}", cid, reason);
+        }
+        if skipped.len() > 10 {
+            println!("  ... and {} more", skipped.len() - 10);
+        }
+    }
+
+    if eligible.is_empty() {
+        println!("\nNothing safe to prune.");
+        return Ok(());
+    }
+
+    if !execute {
+        println!("\nPREVIEW — re-run with --execute to delete the {} eligible v0 pin(s).", eligible.len());
+        return Ok(());
+    }
+
+    if let Some(limit) = limit {
+        eligible.truncate(limit);
+        println!("\nLimited to first {} deletion(s).", eligible.len());
+    }
+
+    let requestids: Vec<String> = eligible.iter().map(|(rid, _)| rid.clone()).collect();
+
+    use indicatif::{ProgressBar, ProgressStyle};
+    let pb = ProgressBar::new(requestids.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let results = client
+        .delete_pins(
+            &requestids,
+            Some(&|done, _total| pb.set_position(done as u64)),
+        )
+        .await;
+    pb.finish_and_clear();
+
+    let deleted = results.iter().filter(|r| r.is_ok()).count();
+    let failed = results.len() - deleted;
+    println!("\nPrune complete:");
+    println!("  Deleted: {}", deleted);
+    if failed > 0 {
+        println!("  Failed:  {}", failed);
+        for (result, (_, cid)) in results.iter().zip(eligible.iter()) {
+            if let Err(e) = result {
+                println!("    {} — {}", cid, e);
             }
         }
     }
