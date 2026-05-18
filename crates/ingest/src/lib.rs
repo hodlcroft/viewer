@@ -14,6 +14,7 @@ pub mod cid_compute;
 pub mod fetch;
 pub mod filebase;
 pub mod ipfs;
+pub mod maestro;
 pub mod nftcdn;
 pub mod normalize;
 pub mod pinata;
@@ -31,6 +32,9 @@ pub use fetch::{
     FetchResult, fetch_images, fetch_images_iiif, fetch_images_nftcdn, fetch_thumbnails_pinata,
 };
 pub use ipfs::{IpfsFetcher, extract_cid, to_cidv1};
+pub use maestro::{
+    Cip68Envelope, MaestroAsset, MaestroClient, MaestroError, MaestroSource, PolicyAssetsResponse,
+};
 pub use nftcdn::{NftcdnClient, NftcdnError};
 pub use normalize::{
     BatchNormalizer, NormalizeConfig, NormalizeError, NormalizeResult, normalize_image,

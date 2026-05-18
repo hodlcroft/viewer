@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -46,6 +46,12 @@ enum Commands {
     Filebase {
         #[command(subcommand)]
         action: FilebaseAction,
+    },
+
+    /// Asset source operations and diagnostics
+    Source {
+        #[command(subcommand)]
+        action: SourceAction,
     },
 
     /// CID analysis and computation
@@ -103,6 +109,17 @@ enum PinataAction {
 }
 
 #[derive(Subcommand)]
+enum SourceAction {
+    /// Fetch one page of assets from Maestro for a policy and report how
+    /// they parse against cardano_assets::AssetMetadata. Used to validate
+    /// the Maestro fallback path before doing a full ingestion.
+    ProbeMaestro {
+        /// Policy ID of the collection
+        policy_id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum FilebaseAction {
     /// Pin every on-chain CID for a collection to the Filebase bucket
     /// associated with FILEBASE_API_TOKEN.
@@ -126,7 +143,18 @@ enum FilebaseAction {
         /// (20 req/s). Use 0 to disable pacing entirely.
         #[arg(long)]
         delay_ms: Option<u64>,
+
+        /// Collection metadata source. Defaults to cnft.tools; fall back to
+        /// Maestro for collections cnft.tools doesn't index.
+        #[arg(long, value_enum, default_value_t = AssetSourceKind::Cnft)]
+        source: AssetSourceKind,
     },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum AssetSourceKind {
+    Cnft,
+    Maestro,
 }
 
 #[derive(Subcommand)]
@@ -240,6 +268,9 @@ async fn main() -> anyhow::Result<()> {
                 dry_run,
             } => cmd_pinata_clean(&policy_id, config, dry_run).await,
         },
+        Commands::Source { action } => match action {
+            SourceAction::ProbeMaestro { policy_id } => cmd_source_probe_maestro(&policy_id).await,
+        },
         Commands::Filebase { action } => match action {
             FilebaseAction::Pin {
                 policy_id,
@@ -247,7 +278,8 @@ async fn main() -> anyhow::Result<()> {
                 dry_run,
                 limit,
                 delay_ms,
-            } => cmd_filebase_pin(&policy_id, config, dry_run, limit, delay_ms).await,
+                source,
+            } => cmd_filebase_pin(&policy_id, config, dry_run, limit, delay_ms, source).await,
         },
         Commands::Cid { action } => match action {
             CidAction::Check {
@@ -1659,10 +1691,13 @@ async fn cmd_filebase_pin(
     dry_run: bool,
     limit: Option<usize>,
     delay_ms: Option<u64>,
+    source: AssetSourceKind,
 ) -> anyhow::Result<()> {
     use std::collections::BTreeMap;
     use std::time::Duration;
-    use viewer_ingest::{AssetSource, CnftToolsSource, FilebaseClient, PinItem, extract_cid};
+    use viewer_ingest::{
+        AssetSource, CnftToolsSource, FilebaseClient, MaestroSource, PinItem, extract_cid,
+    };
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -1674,9 +1709,11 @@ async fn cmd_filebase_pin(
 
     println!("Filebase pin for: {}", policy_id);
 
-    println!("Fetching collection metadata...");
-    let source = CnftToolsSource::new();
-    let assets = source.fetch_collection(policy_id).await?;
+    println!("Fetching collection metadata via {:?}...", source);
+    let assets = match source {
+        AssetSourceKind::Cnft => CnftToolsSource::new().fetch_collection(policy_id).await?,
+        AssetSourceKind::Maestro => MaestroSource::from_env()?.fetch_collection(policy_id).await?,
+    };
     println!("  Found {} assets", assets.len());
 
     // Build a deterministic CID -> display_name map. Deduplicates the same CID
@@ -1786,6 +1823,113 @@ async fn cmd_filebase_pin(
             if let Err(e) = &r.outcome {
                 println!("    {} ({}): {}", r.name, r.cid, e);
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// Fetch one page from Maestro for a policy and report parse results.
+///
+/// Reports: how many assets came back, how many had CIP-25 metadata, and
+/// how many of those parsed cleanly via `cardano_assets::AssetMetadata`.
+/// Dumps the first asset's parsed form so we can sanity-check the mapping.
+async fn cmd_source_probe_maestro(policy_id: &str) -> anyhow::Result<()> {
+    use cardano_assets::{Asset, AssetMetadata};
+    use viewer_ingest::MaestroClient;
+
+    println!("Probing Maestro for: {}", policy_id);
+
+    let client = MaestroClient::from_env()?;
+
+    // Dump the raw first asset to surface field names we may have missed.
+    let raw = client.fetch_policy_assets_page_raw(policy_id).await?;
+    if let Some(first) = raw.get("data").and_then(|d| d.as_array()).and_then(|a| a.first()) {
+        println!("\nRaw first asset (top-level keys):");
+        if let Some(obj) = first.as_object() {
+            for k in obj.keys() {
+                println!("  {}", k);
+            }
+        }
+        println!("\nRaw first asset JSON:\n{}", serde_json::to_string_pretty(first)?);
+    }
+
+    let page = client.fetch_policy_assets_page(policy_id, None).await?;
+
+    let total = page.data.len();
+    let mut with_cip25 = 0usize;
+    let mut with_cip68 = 0usize;
+    let mut parsed_ok = 0usize;
+    let mut parse_failures: Vec<(String, String)> = Vec::new();
+    let mut first_sample: Option<Asset> = None;
+
+    for asset in &page.data {
+        let Some(standards) = asset.asset_standards.as_ref() else {
+            continue;
+        };
+
+        // Prefer CIP-25 if present, otherwise unwrap the CIP-68 envelope and
+        // parse the inner metadata (which follows the same shapes).
+        let metadata_value = if let Some(cip25) = standards.cip25_metadata.as_ref() {
+            with_cip25 += 1;
+            Some(cip25.clone())
+        } else if let Some(envelope) = standards.cip68_metadata.as_ref() {
+            with_cip68 += 1;
+            Some(envelope.metadata.clone())
+        } else {
+            None
+        };
+
+        let Some(value) = metadata_value else { continue };
+
+        match serde_json::from_value::<AssetMetadata>(value) {
+            Ok(metadata) => {
+                parsed_ok += 1;
+                if first_sample.is_none() {
+                    first_sample = Some(Asset::from(metadata));
+                }
+            }
+            Err(e) => {
+                if parse_failures.len() < 5 {
+                    parse_failures.push((asset.asset_name.clone(), e.to_string()));
+                }
+            }
+        }
+    }
+
+    println!("\nPage summary:");
+    println!("  Assets in page:       {}", total);
+    println!("  With cip25_metadata:  {}", with_cip25);
+    println!("  With cip68_metadata:  {}", with_cip68);
+    println!("  Parsed via AssetMetadata: {}", parsed_ok);
+    println!(
+        "  Parse failures:       {}",
+        (with_cip25 + with_cip68).saturating_sub(parsed_ok)
+    );
+    println!(
+        "  next_cursor:          {}",
+        page.next_cursor.as_deref().unwrap_or("(none)")
+    );
+
+    if let Some(sample) = first_sample {
+        let trait_count = sample.traits.inner().len();
+        println!("\nFirst parsed asset:");
+        println!("  name:   {}", sample.name);
+        println!("  image:  {}", sample.image);
+        println!("  media:  {:?}", sample.media_type);
+        println!("  traits: {} keys", trait_count);
+        for (k, vs) in sample.traits.iter().take(5) {
+            println!("    {} = {:?}", k, vs);
+        }
+        if trait_count > 5 {
+            println!("    ... and {} more", trait_count - 5);
+        }
+    }
+
+    if !parse_failures.is_empty() {
+        println!("\nFirst {} parse failures:", parse_failures.len());
+        for (name, err) in &parse_failures {
+            println!("  {}: {}", name, err);
         }
     }
 

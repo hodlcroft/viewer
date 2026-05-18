@@ -1,0 +1,11 @@
+# Vampires
+# Policy ID: 383194471e12a23c8c76e74223b73775ca0791a15411615fd5518043
+
+slug = "vampires"
+name = "Vampires"
+
+[traits]
+ignore = []
+
+[rarity]
+exclude = []

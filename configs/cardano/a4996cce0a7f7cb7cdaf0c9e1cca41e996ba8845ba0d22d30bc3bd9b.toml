@@ -1,0 +1,11 @@
+# MrFan Fan Club
+# Policy ID: a4996cce0a7f7cb7cdaf0c9e1cca41e996ba8845ba0d22d30bc3bd9b
+
+slug = "mrfan"
+name = "MrFan Fan Club"
+
+[traits]
+ignore = []
+
+[rarity]
+exclude = []
