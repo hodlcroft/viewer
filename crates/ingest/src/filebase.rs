@@ -6,10 +6,15 @@
 
 use std::collections::BTreeMap;
 use std::time::Duration;
+use serde::Deserialize;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use filebase_sdk::{FilebaseApi, FilebaseError as ApiError, PinByCidResponse, PinListQuery};
+
+/// Filebase IPFS RPC API base — Kubo-compatible, distinct from the
+/// Pinning Service API the shared crate wraps.
+const RPC_BASE_URL: &str = "https://rpc.filebase.io";
 
 /// Default delay between successive pin requests (20 req/s).
 ///
@@ -32,6 +37,20 @@ pub enum FilebaseError {
 
     #[error("Exhausted {attempts} retries on transient error: {last}")]
     RetryExhausted { attempts: u32, last: String },
+
+    #[error("Filebase RPC error: {0}")]
+    Rpc(String),
+}
+
+/// One entry from the IPFS RPC `/api/v0/add` ndjson response. When the
+/// upload path contains a directory, the response has one entry per file
+/// plus a final entry for the wrapping directory.
+#[derive(Debug, Deserialize)]
+struct RpcAddEntry {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Hash")]
+    hash: String,
 }
 
 /// A single item to pin, including the folder-style `name` and any metadata
@@ -79,6 +98,8 @@ impl PinStatusCounts {
 pub struct FilebaseClient {
     api: FilebaseApi,
     delay: Duration,
+    token: String,
+    rpc: reqwest::Client,
 }
 
 impl FilebaseClient {
@@ -86,9 +107,86 @@ impl FilebaseClient {
     pub fn from_env() -> Result<Self, FilebaseError> {
         let token = std::env::var("FILEBASE_API_TOKEN").map_err(|_| FilebaseError::MissingToken)?;
         Ok(Self {
-            api: FilebaseApi::with_token(token),
+            api: FilebaseApi::with_token(token.clone()),
             delay: DEFAULT_RATE_LIMIT_DELAY,
+            token,
+            rpc: reqwest::Client::new(),
         })
+    }
+
+    /// Add content to Filebase via the IPFS RPC API at the given bucket
+    /// path, returning the CID Filebase computed for the *file* (not the
+    /// wrapping directory).
+    ///
+    /// Uses `cid-version=0` deliberately: version 1 would also enable
+    /// `raw-leaves`, producing a different CID than standard `ipfs add`.
+    /// `path` may contain `/` to organize the object into a directory;
+    /// the directory does not affect the file's content CID.
+    pub async fn rpc_add(&self, path: &str, bytes: Vec<u8>) -> Result<String, FilebaseError> {
+        let url = format!("{RPC_BASE_URL}/api/v0/add?cid-version=0");
+
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(path.to_string());
+        let form = reqwest::multipart::Form::new().part("file", part);
+
+        let response = self
+            .rpc
+            .post(&url)
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| FilebaseError::Rpc(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(FilebaseError::Rpc(format!("HTTP {status}: {body}")));
+        }
+
+        // ndjson, one entry per file plus a trailing directory entry — pick
+        // the entry whose Name matches the path we uploaded.
+        let text = response
+            .text()
+            .await
+            .map_err(|e| FilebaseError::Rpc(e.to_string()))?;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<RpcAddEntry>(line) {
+                if entry.name == path {
+                    return Ok(entry.hash);
+                }
+            }
+        }
+        Err(FilebaseError::Rpc(format!(
+            "no file entry for {path} in add response: {text}"
+        )))
+    }
+
+    /// Pin a CID on Filebase via the IPFS RPC API, persisting it durably.
+    ///
+    /// This is the durable-pin step for content put on the RPC node by
+    /// `rpc_add` — distinct from the Pinning Service `pin_by_cid`, which is
+    /// a separate subsystem and won't see RPC-added content.
+    pub async fn rpc_pin_add(&self, cid: &str) -> Result<(), FilebaseError> {
+        let url = format!("{RPC_BASE_URL}/api/v0/pin/add?arg={cid}");
+
+        let response = self
+            .rpc
+            .post(&url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| FilebaseError::Rpc(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(FilebaseError::Rpc(format!("pin/add HTTP {status}: {body}")));
+        }
+        Ok(())
     }
 
     /// Override the inter-request delay used by `pin_cids`.

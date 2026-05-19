@@ -151,6 +151,30 @@ enum FilebaseAction {
         policy_id: String,
     },
 
+    /// List a collection's content that has no successful pin — the set
+    /// needing rescue. Collapses CIDv0/v1 of the same block by multihash.
+    Unpinned {
+        /// Policy ID of the collection
+        policy_id: String,
+    },
+
+    /// Recover a collection's failed-pin content from nftcdn. Probes by
+    /// default — fetches each failed asset's image and checks the bytes
+    /// reproduce its on-chain CID. With --execute, also re-hosts the
+    /// verified content to Filebase via the IPFS RPC API.
+    Rescue {
+        /// Policy ID of the collection
+        policy_id: String,
+
+        /// Process at most N failed CIDs
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Re-host verified content to Filebase; without this, probe only.
+        #[arg(long)]
+        execute: bool,
+    },
+
     /// Remove legacy CIDv0 pins for a collection, but only where a
     /// CIDv1 pin of the same content is already `pinned`. Previews by
     /// default — pass --execute to actually delete.
@@ -296,6 +320,12 @@ async fn main() -> anyhow::Result<()> {
                 delay_ms,
             } => cmd_filebase_pin(&policy_id, config, dry_run, limit, delay_ms).await,
             FilebaseAction::Status { policy_id } => cmd_filebase_status(&policy_id).await,
+            FilebaseAction::Unpinned { policy_id } => cmd_filebase_unpinned(&policy_id).await,
+            FilebaseAction::Rescue {
+                policy_id,
+                limit,
+                execute,
+            } => cmd_filebase_rescue(&policy_id, limit, execute).await,
             FilebaseAction::PruneV0 {
                 policy_id,
                 execute,
@@ -1854,6 +1884,265 @@ async fn cmd_filebase_status(policy_id: &str) -> anyhow::Result<()> {
         );
     } else if counts.total() > 0 {
         println!("\nAll pins resolved.");
+    }
+
+    Ok(())
+}
+
+/// List a collection's content with no successful pin on Filebase.
+///
+/// Collapses CIDv0/v1 of the same block by multihash, so content counts
+/// as covered if *either* version reached `pinned`. The genuinely-failed
+/// set (every pin `failed`) is the input for an nftcdn-based rescue;
+/// still-resolving content just needs more time.
+async fn cmd_filebase_unpinned(policy_id: &str) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+    use viewer_ingest::{FilebaseClient, to_cidv1};
+
+    println!("Filebase unpinned for: {}", policy_id);
+
+    let client = FilebaseClient::from_env()?;
+    println!("Listing all pins...");
+    let pins = client.list_all_pins(policy_id).await?;
+    println!("  Total pins: {}", pins.len());
+
+    // Group pins by canonical v1 CID — collapses v0/v1 of the same block.
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    let mut unparseable = 0usize;
+    for pin in &pins {
+        match to_cidv1(&pin.cid) {
+            Some(v1) => groups.entry(v1).or_default().push(pin.status.clone()),
+            None => unparseable += 1,
+        }
+    }
+
+    // Unpinned content = no pin for it reached `pinned`.
+    let mut unpinned: Vec<(&String, Vec<String>)> = groups
+        .iter()
+        .filter(|(_, statuses)| !statuses.iter().any(|s| s == "pinned"))
+        .map(|(cid, statuses)| {
+            let mut s: Vec<String> = statuses.clone();
+            s.sort();
+            s.dedup();
+            (cid, s)
+        })
+        .collect();
+    unpinned.sort_by(|a, b| a.0.cmp(b.0));
+
+    let total_content = groups.len();
+    let covered = total_content - unpinned.len();
+
+    println!("  Unique content (by multihash): {}", total_content);
+    println!("  Covered (>=1 pin `pinned`):    {}", covered);
+    println!("  Unpinned (0 pins `pinned`):    {}", unpinned.len());
+    if unparseable > 0 {
+        println!("  Unparseable CIDs skipped:      {}", unparseable);
+    }
+
+    if unpinned.is_empty() {
+        println!("\nAll content is pinned.");
+        return Ok(());
+    }
+
+    // Split: every-pin-failed = genuine rescue target; anything still
+    // queued/pinning just needs more time.
+    let (failed, resolving): (Vec<_>, Vec<_>) = unpinned
+        .iter()
+        .partition(|(_, statuses)| statuses.iter().all(|s| s == "failed"));
+
+    println!("\n  Genuinely failed (rescue target): {}", failed.len());
+    println!("  Still resolving (just wait):      {}", resolving.len());
+
+    if !failed.is_empty() {
+        println!("\nFailed content (needs rescue):");
+        for (cid, _) in &failed {
+            println!("{}", cid);
+        }
+    }
+
+    Ok(())
+}
+
+/// Recover a collection's failed-pin content from nftcdn. For each failed
+/// CID: map to its asset, fetch the image from nftcdn, and check whether
+/// the bytes reproduce the on-chain CID via `find_matching_cid`. With
+/// `execute`, verified content is re-hosted to Filebase via the IPFS RPC
+/// `add` endpoint and the returned CID is confirmed against the original.
+async fn cmd_filebase_rescue(
+    policy_id: &str,
+    limit: Option<usize>,
+    execute: bool,
+) -> anyhow::Result<()> {
+    use cardano_assets::AssetId;
+    use std::collections::HashMap;
+    use viewer_ingest::{
+        AssetSource, FilebaseClient, MaestroSource, NftcdnClient, compute_cid_bytes, extract_cid,
+        find_matching_cid, to_cidv1,
+    };
+
+    println!(
+        "Filebase rescue ({}) for: {}",
+        if execute { "execute" } else { "probe" },
+        policy_id
+    );
+
+    // 1. Failed content set from Filebase (every pin for it `failed`).
+    let client = FilebaseClient::from_env()?;
+    println!("Listing pins...");
+    let pins = client.list_all_pins(policy_id).await?;
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    for pin in &pins {
+        if let Some(v1) = to_cidv1(&pin.cid) {
+            groups.entry(v1).or_default().push(pin.status.clone());
+        }
+    }
+    let mut failed: Vec<String> = groups
+        .into_iter()
+        .filter(|(_, s)| !s.is_empty() && s.iter().all(|x| x == "failed"))
+        .map(|(cid, _)| cid)
+        .collect();
+    failed.sort();
+    println!("  Failed content: {}", failed.len());
+
+    if failed.is_empty() {
+        println!("Nothing to rescue.");
+        return Ok(());
+    }
+
+    // 2. Maestro asset list → v1 CID -> hex asset name.
+    println!("Fetching asset list from Maestro...");
+    let assets = MaestroSource::from_env()?.fetch_collection(policy_id).await?;
+    let mut cid_to_asset: HashMap<String, String> = HashMap::new();
+    for a in &assets {
+        if let Some(url) = a.image_url.as_ref() {
+            if let Some(cid) = extract_cid(url) {
+                if let Some(v1) = to_cidv1(&cid) {
+                    cid_to_asset
+                        .entry(v1)
+                        .or_insert_with(|| a.encoded_name.clone());
+                }
+            }
+        }
+    }
+    println!("  Assets with resolvable CIDs: {}", cid_to_asset.len());
+
+    // 3. For each failed CID: nftcdn fetch + CID verification.
+    let nftcdn = NftcdnClient::from_env()?;
+    let mut targets: Vec<&String> = failed.iter().collect();
+    if let Some(n) = limit {
+        targets.truncate(n);
+        println!("  Limited to first {}", targets.len());
+    }
+
+    use indicatif::{ProgressBar, ProgressStyle};
+    let pb = ProgressBar::new(targets.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let mut unmapped = 0usize;
+    let mut fetch_failed = 0usize;
+    let mut reproduced = 0usize;
+    let mut mismatch = 0usize;
+    let mut mismatch_samples: Vec<(String, String, usize)> = Vec::new();
+    let mut rehosted = 0usize;
+    let mut rehost_failed = 0usize;
+    let mut rehost_errors: Vec<(String, String)> = Vec::new();
+
+    for cid in targets {
+        pb.inc(1);
+
+        let Some(encoded_name) = cid_to_asset.get(cid) else {
+            unmapped += 1;
+            continue;
+        };
+        let Ok(asset_id) = AssetId::new(policy_id.to_string(), encoded_name.clone()) else {
+            unmapped += 1;
+            continue;
+        };
+
+        let bytes = match nftcdn.fetch_image(&asset_id).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                fetch_failed += 1;
+                continue;
+            }
+        };
+
+        if find_matching_cid(&bytes, cid).is_none() {
+            mismatch += 1;
+            if mismatch_samples.len() < 5 {
+                let computed = compute_cid_bytes(&bytes);
+                mismatch_samples.push((cid.clone(), computed.cid_v1, bytes.len()));
+            }
+            continue;
+        }
+        reproduced += 1;
+
+        if !execute {
+            continue;
+        }
+
+        // Re-host: add the verified bytes to Filebase under a per-policy
+        // path, confirm the returned file CID, then pin it durably via the
+        // RPC API.
+        let path = format!("{policy_id}/{cid}");
+        let returned = match client.rpc_add(&path, bytes).await {
+            Ok(returned) => returned,
+            Err(e) => {
+                rehost_failed += 1;
+                rehost_errors.push((cid.clone(), e.to_string()));
+                continue;
+            }
+        };
+        match to_cidv1(&returned) {
+            Some(v1) if &v1 == cid => {}
+            other => {
+                rehost_failed += 1;
+                rehost_errors.push((
+                    cid.clone(),
+                    format!("returned CID {returned} (v1 {other:?}) != expected"),
+                ));
+                continue;
+            }
+        }
+
+        match client.rpc_pin_add(cid).await {
+            Ok(()) => rehosted += 1,
+            Err(e) => {
+                rehost_failed += 1;
+                rehost_errors.push((cid.clone(), format!("added but pin/add failed: {e}")));
+            }
+        }
+    }
+    pb.finish_and_clear();
+
+    let probed = unmapped + fetch_failed + reproduced + mismatch;
+    println!("\nRescue results ({} probed):", probed);
+    println!("  Recoverable (CID reproduced): {}", reproduced);
+    println!("  Fetched but CID mismatch:     {}", mismatch);
+    println!("  nftcdn fetch failed:          {}", fetch_failed);
+    println!("  No asset mapping:             {}", unmapped);
+
+    if !mismatch_samples.is_empty() {
+        println!("\nCID mismatch samples (expected -> nftcdn bytes):");
+        for (expected, got, size) in &mismatch_samples {
+            println!("  {} -> {} ({} bytes)", expected, got, size);
+        }
+    }
+
+    if execute {
+        println!("\nRe-host to Filebase:");
+        println!("  Re-hosted (CID confirmed): {}", rehosted);
+        println!("  Re-host failed:            {}", rehost_failed);
+        for (cid, err) in rehost_errors.iter().take(10) {
+            println!("    {} — {}", cid, err);
+        }
+    } else if reproduced > 0 {
+        println!("\n{} CID(s) recoverable — re-run with --execute to re-host.", reproduced);
     }
 
     Ok(())

@@ -12,7 +12,8 @@
       "Read(//opt/homebrew/bin/**)",
       "Bash(nix develop *)",
       "Bash(grep -rEl \"FILEBASE_API_TOKEN\" /Users/damo/code/hodlcroft/viewer/ ~/.config/direnv 2>/dev/null; grep -E \"FILEBASE\" /Users/damo/code/hodlcroft/viewer/.envrc 2>&1; ls /Users/damo/code/hodlcroft/viewer/.env.* /Users/damo/code/hodlcroft/viewer/.envrc.local 2>&1)",
-      "Read(//Users/damo/code/defrag/shared-crates/**)"
+      "Read(//Users/damo/code/defrag/shared-crates/**)",
+      "WebFetch(domain:docs.filebase.com)"
     ]
   }
 }
