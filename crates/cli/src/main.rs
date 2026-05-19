@@ -165,6 +165,11 @@ enum FilebaseAction {
         /// Delete at most N pins (applies only with --execute)
         #[arg(long)]
         limit: Option<usize>,
+
+        /// Inter-request delay in milliseconds for the delete pass.
+        /// Default is 50ms; use 0 to disable pacing.
+        #[arg(long)]
+        delay_ms: Option<u64>,
     },
 }
 
@@ -295,7 +300,8 @@ async fn main() -> anyhow::Result<()> {
                 policy_id,
                 execute,
                 limit,
-            } => cmd_filebase_prune_v0(&policy_id, execute, limit).await,
+                delay_ms,
+            } => cmd_filebase_prune_v0(&policy_id, execute, limit, delay_ms).await,
         },
         Commands::Cid { action } => match action {
             CidAction::Check {
@@ -1859,13 +1865,18 @@ async fn cmd_filebase_prune_v0(
     policy_id: &str,
     execute: bool,
     limit: Option<usize>,
+    delay_ms: Option<u64>,
 ) -> anyhow::Result<()> {
     use std::collections::HashMap;
+    use std::time::Duration;
     use viewer_ingest::{FilebaseClient, to_cidv1};
 
     println!("Filebase prune-v0 for: {}", policy_id);
 
-    let client = FilebaseClient::from_env()?;
+    let mut client = FilebaseClient::from_env()?;
+    if let Some(ms) = delay_ms {
+        client = client.with_delay(Duration::from_millis(ms));
+    }
 
     println!("Listing all pins...");
     let pins = client.list_all_pins(policy_id).await?;

@@ -227,6 +227,8 @@ impl FilebaseClient {
     ///
     /// Pages newest-first via the `before` cursor; entries are deduplicated
     /// by request id to absorb any timestamp-boundary overlap between pages.
+    /// All four statuses are requested explicitly — `GET /pins` with no
+    /// `status` filter omits `failed` (and `queued`) pins.
     pub async fn list_all_pins(
         &self,
         policy_id: &str,
@@ -242,6 +244,7 @@ impl FilebaseClient {
             let query = PinListQuery {
                 name: Some(format!("{policy_id}/")),
                 name_match: Some("partial".to_string()),
+                status: Some("queued,pinning,pinned,failed".to_string()),
                 before: before.clone(),
                 limit: PAGE,
                 ..Default::default()
