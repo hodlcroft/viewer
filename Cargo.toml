@@ -94,7 +94,7 @@ base64 = "0.22.1"
 # Local overrides for development
 [patch."https://github.com/defrag-au/shared-crates"]
 # cnft_tools = { path = "/Users/damo/code/defrag/shared-crates/cnft-tools" }
-# cardano-assets = { path = "/Users/damo/code/defrag/shared-crates/cardano-assets" }
+cardano-assets = { path = "/Users/damo/code/defrag/shared-crates/cardano-assets" }
 # asset-rarity = { path = "/Users/damo/code/defrag/shared-crates/asset-rarity" }
 # wallet-leptos = { path = "/Users/damo/code/defrag/shared-crates/ui/wallet-leptos" }
 # wallet-pallas = { path = "/Users/damo/code/defrag/shared-crates/ui/wallet-pallas" }
