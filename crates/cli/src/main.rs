@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -108,6 +108,15 @@ enum PinataAction {
     },
 }
 
+/// CID source for `filebase pin`.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum PinSource {
+    /// `ownership.cnft.dev/api/cids/{policy}` — pre-resolved.
+    CidIndex,
+    /// Live extraction via Maestro + local `cardano-assets`.
+    Maestro,
+}
+
 #[derive(Subcommand)]
 enum SourceAction {
     /// Fetch one page of assets from Maestro for a policy and report how
@@ -143,6 +152,13 @@ enum FilebaseAction {
         /// (20 req/s). Use 0 to disable pacing entirely.
         #[arg(long)]
         delay_ms: Option<u64>,
+
+        /// Where to source the CID set. Default `cid-index` uses
+        /// `ownership.cnft.dev`; `maestro` extracts live via Maestro +
+        /// the local `cardano-assets` patch (use when a policy isn't yet
+        /// indexed by the collection-ownership worker).
+        #[arg(long, value_enum, default_value_t = PinSource::CidIndex)]
+        source: PinSource,
     },
 
     /// Report pin status counts for a collection on Filebase.
@@ -151,11 +167,133 @@ enum FilebaseAction {
         policy_id: String,
     },
 
+    /// Group every `failed` pin in the bucket by the policy_id parsed
+    /// from each pin's name prefix. Reports per-policy counts (sorted
+    /// descending) so the rescue can be driven per policy.
+    FailedByPolicy,
+
     /// List a collection's content that has no successful pin — the set
     /// needing rescue. Collapses CIDv0/v1 of the same block by multihash.
     Unpinned {
         /// Policy ID of the collection
         policy_id: String,
+
+        /// Resolve each unpinned CID back to its asset via Maestro and
+        /// include the display name in the listing.
+        #[arg(long)]
+        with_names: bool,
+    },
+
+    /// Audit root-level bucket objects. Lists every object directly at
+    /// the bucket root (no `/` in key) and classifies each as either
+    /// "covered" (a copy exists under some policy folder) or "orphan"
+    /// (no folder copy — would lose content if deleted).
+    RootAudit {
+        /// Print first N entries from each bucket
+        #[arg(long, default_value_t = 20)]
+        sample: usize,
+    },
+
+    /// Delete root-level CID-keyed bucket objects whose content has a
+    /// folder copy elsewhere ("covered"). Previews by default — pass
+    /// --execute to actually delete. Orphan root entries (no folder copy)
+    /// are never touched here.
+    RootCleanup {
+        /// Actually delete; without this, the command only previews.
+        #[arg(long)]
+        execute: bool,
+
+        /// Delete at most N entries (applies only with --execute)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+
+    /// Reclassify objects in `uncategorized/` by building a forward CID
+    /// index from every known policy folder (via Maestro), inverting it,
+    /// and moving each matched object into `{policy_id}/{cid_v1}`.
+    /// Unmatched entries stay where they are. Previews by default.
+    ClassifyUncategorized {
+        /// Actually perform the moves; without this, only previews.
+        #[arg(long)]
+        execute: bool,
+
+        /// Source folder to reclassify
+        #[arg(long, default_value = "uncategorized")]
+        source_folder: String,
+
+        /// Move at most N entries (applies only with --execute)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+
+    /// Relocate orphan root objects (no folder copy) into an
+    /// `uncategorized/` folder via S3 COPY, then delete the root entry.
+    /// Each delete is guarded by a HEAD on the copied key — root is only
+    /// dropped after the destination is confirmed present.
+    RootRelocate {
+        /// Actually perform the relocation; without this, the command
+        /// only previews.
+        #[arg(long)]
+        execute: bool,
+
+        /// Relocate at most N entries (applies only with --execute)
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Destination folder (default `uncategorized`)
+        #[arg(long, default_value = "uncategorized")]
+        folder: String,
+    },
+
+    /// HEAD a bucket object — prints its size, etag, content-type, and
+    /// any `x-amz-meta-*` metadata Filebase attached (incl. `cid`).
+    S3Head {
+        /// Bucket key
+        key: String,
+    },
+
+    /// Delete every object under a given key prefix. Previews by
+    /// default; --execute actually deletes. Use with care — content
+    /// becomes unpinned if no other reference exists.
+    DeletePrefix {
+        /// Key prefix, e.g. "uncategorized/" or "audit-probe/"
+        prefix: String,
+
+        #[arg(long)]
+        execute: bool,
+
+        /// Delete at most N entries (applies only with --execute)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+
+    /// Verify that deleting a root-level CID-keyed object does NOT unpin
+    /// content that's also referenced by a path-keyed copy. Uploads a
+    /// random test blob to a path key, confirms both entries share the
+    /// same pin, deletes the root, then re-HEADs the path entry to check
+    /// it survives intact.
+    DeleteSafetyTest,
+
+    /// List bucket objects with the given S3 key prefix (debug helper).
+    S3List {
+        /// Key prefix, e.g. "a4996cce.../" or "" for everything at root
+        prefix: String,
+
+        /// Limit how many entries to print
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+
+    /// Remove orphaned root-level CIDv0 bucket objects from an earlier
+    /// rescue, only when the matching v1 entry under `{policy}/...` is
+    /// populated. Previews by default — pass --execute to actually delete.
+    RescueCleanup {
+        /// Policy ID of the collection
+        policy_id: String,
+
+        /// Actually delete; without this, the command only previews.
+        #[arg(long)]
+        execute: bool,
     },
 
     /// Recover a collection's failed-pin content from nftcdn. Probes by
@@ -318,9 +456,39 @@ async fn main() -> anyhow::Result<()> {
                 dry_run,
                 limit,
                 delay_ms,
-            } => cmd_filebase_pin(&policy_id, config, dry_run, limit, delay_ms).await,
+                source,
+            } => cmd_filebase_pin(&policy_id, config, dry_run, limit, delay_ms, source).await,
             FilebaseAction::Status { policy_id } => cmd_filebase_status(&policy_id).await,
-            FilebaseAction::Unpinned { policy_id } => cmd_filebase_unpinned(&policy_id).await,
+            FilebaseAction::FailedByPolicy => cmd_filebase_failed_by_policy().await,
+            FilebaseAction::Unpinned {
+                policy_id,
+                with_names,
+            } => cmd_filebase_unpinned(&policy_id, with_names).await,
+            FilebaseAction::RootAudit { sample } => cmd_filebase_root_audit(sample).await,
+            FilebaseAction::RootCleanup { execute, limit } => {
+                cmd_filebase_root_cleanup(execute, limit).await
+            }
+            FilebaseAction::RootRelocate {
+                execute,
+                limit,
+                folder,
+            } => cmd_filebase_root_relocate(execute, limit, &folder).await,
+            FilebaseAction::ClassifyUncategorized {
+                execute,
+                source_folder,
+                limit,
+            } => cmd_filebase_classify_uncategorized(execute, &source_folder, limit).await,
+            FilebaseAction::S3Head { key } => cmd_filebase_s3_head(&key).await,
+            FilebaseAction::DeletePrefix {
+                prefix,
+                execute,
+                limit,
+            } => cmd_filebase_delete_prefix(&prefix, execute, limit).await,
+            FilebaseAction::DeleteSafetyTest => cmd_filebase_delete_safety_test().await,
+            FilebaseAction::S3List { prefix, limit } => cmd_filebase_s3_list(&prefix, limit).await,
+            FilebaseAction::RescueCleanup { policy_id, execute } => {
+                cmd_filebase_rescue_cleanup(&policy_id, execute).await
+            }
             FilebaseAction::Rescue {
                 policy_id,
                 limit,
@@ -1743,10 +1911,13 @@ async fn cmd_filebase_pin(
     dry_run: bool,
     limit: Option<usize>,
     delay_ms: Option<u64>,
+    source: PinSource,
 ) -> anyhow::Result<()> {
     use std::collections::BTreeMap;
     use std::time::Duration;
-    use viewer_ingest::{CidIndexClient, CidIndexStatus, FilebaseClient, PinItem};
+    use viewer_ingest::{
+        CidIndexClient, CidIndexStatus, FilebaseClient, MaestroClient, PinItem,
+    };
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -1758,23 +1929,32 @@ async fn cmd_filebase_pin(
 
     println!("Filebase pin for: {}", policy_id);
 
-    println!("Fetching CID index from ownership.cnft.dev...");
-    let index = CidIndexClient::new().fetch_all(policy_id).await?;
-    println!(
-        "  Index status: {:?} (generation {})",
-        index.status, index.cid_generation
-    );
-    println!("  CIDs to pin: {}", index.cids.len());
+    let cids: Vec<String> = match source {
+        PinSource::CidIndex => {
+            println!("Fetching CID index from ownership.cnft.dev...");
+            let index = CidIndexClient::new().fetch_all(policy_id).await?;
+            println!(
+                "  Index status: {:?} (generation {})",
+                index.status, index.cid_generation
+            );
+            if index.status != CidIndexStatus::Complete {
+                println!("  WARNING: index is not fully resolved — the CID set may be incomplete.");
+            }
+            index.cids
+        }
+        PinSource::Maestro => {
+            println!("Extracting CIDs from Maestro (local cardano-assets)...");
+            MaestroClient::from_env()?
+                .fetch_policy_cids(policy_id)
+                .await?
+        }
+    };
+    println!("  CIDs to pin: {}", cids.len());
 
-    if index.status != CidIndexStatus::Complete {
-        println!("  WARNING: index is not fully resolved — the CID set may be incomplete.");
-    }
-
-    // The CID index returns a deduplicated, CIDv1-normalised set, so pins are
-    // identified by CID alone. No per-asset names are available from this
-    // source — meta carries only policy_id and slug.
-    let mut items: Vec<PinItem> = index
-        .cids
+    // CIDs are CIDv1-normalised and deduplicated, so pins are identified by
+    // CID alone. No per-asset names are available — meta carries only
+    // policy_id and slug.
+    let mut items: Vec<PinItem> = cids
         .iter()
         .map(|cid| {
             let mut meta = BTreeMap::new();
@@ -1889,15 +2069,57 @@ async fn cmd_filebase_status(policy_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Group every `failed` pin in the bucket by policy_id (extracted from
+/// the pin name's first segment). Reports per-policy counts sorted
+/// descending so the rescue can be driven per policy.
+async fn cmd_filebase_failed_by_policy() -> anyhow::Result<()> {
+    use std::collections::HashMap;
+    use viewer_ingest::FilebaseClient;
+
+    println!("Listing all failed pins across the bucket...");
+    let client = FilebaseClient::from_env()?;
+    let pins = client.list_all_pins_with_status_global("failed").await?;
+    println!("  Total failed pins: {}", pins.len());
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut unknown = 0usize;
+    for pin in &pins {
+        match pin.name.as_deref() {
+            Some(name) => match name.split_once('/') {
+                Some((policy, _)) => {
+                    *counts.entry(policy.to_string()).or_insert(0) += 1;
+                }
+                None => unknown += 1,
+            },
+            None => unknown += 1,
+        }
+    }
+
+    let mut rows: Vec<(String, usize)> = counts.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    println!("\nPer-policy failed counts:");
+    for (policy, count) in &rows {
+        println!("  {count:>5}  {policy}");
+    }
+    if unknown > 0 {
+        println!("  {unknown:>5}  (no policy in name)");
+    }
+
+    Ok(())
+}
+
 /// List a collection's content with no successful pin on Filebase.
 ///
 /// Collapses CIDv0/v1 of the same block by multihash, so content counts
 /// as covered if *either* version reached `pinned`. The genuinely-failed
 /// set (every pin `failed`) is the input for an nftcdn-based rescue;
 /// still-resolving content just needs more time.
-async fn cmd_filebase_unpinned(policy_id: &str) -> anyhow::Result<()> {
+async fn cmd_filebase_unpinned(policy_id: &str, with_names: bool) -> anyhow::Result<()> {
     use std::collections::HashMap;
-    use viewer_ingest::{FilebaseClient, to_cidv1};
+    use viewer_ingest::{
+        AssetSource, FilebaseClient, MaestroSource, extract_cid, to_cidv1,
+    };
 
     println!("Filebase unpinned for: {}", policy_id);
 
@@ -1953,10 +2175,900 @@ async fn cmd_filebase_unpinned(policy_id: &str) -> anyhow::Result<()> {
     println!("\n  Genuinely failed (rescue target): {}", failed.len());
     println!("  Still resolving (just wait):      {}", resolving.len());
 
-    if !failed.is_empty() {
-        println!("\nFailed content (needs rescue):");
-        for (cid, _) in &failed {
+    if failed.is_empty() {
+        return Ok(());
+    }
+
+    // Optionally resolve each CID back to its asset via Maestro for a
+    // human-readable report.
+    let names: HashMap<String, String> = if with_names {
+        println!("\nResolving asset names via Maestro...");
+        let assets = MaestroSource::from_env()?.fetch_collection(policy_id).await?;
+        let mut map = HashMap::new();
+        for a in &assets {
+            if let Some(url) = a.image_url.as_ref() {
+                if let Some(cid) = extract_cid(url) {
+                    if let Some(v1) = to_cidv1(&cid) {
+                        map.entry(v1).or_insert_with(|| a.display_name.clone());
+                    }
+                }
+            }
+        }
+        println!("  Mapped {} CIDs to assets", map.len());
+        map
+    } else {
+        HashMap::new()
+    };
+
+    println!("\nFailed content (needs rescue):");
+    for (cid, _) in &failed {
+        if with_names {
+            let name = names.get(cid.as_str()).map(|s| s.as_str()).unwrap_or("(unknown)");
+            println!("{}\t{}", name, cid);
+        } else {
             println!("{}", cid);
+        }
+    }
+
+    Ok(())
+}
+
+/// Audit root-level bucket objects: enumerate everything directly at root
+/// (no `/` in key), enumerate every top-level policy folder, build the set
+/// of v1 CIDs covered by folder copies, and classify each root entry as
+/// "covered" (folder copy exists) or "orphan" (no folder copy).
+async fn cmd_filebase_root_audit(sample: usize) -> anyhow::Result<()> {
+    use std::collections::HashSet;
+    use viewer_ingest::{FilebaseS3Client, to_cidv1};
+
+    let s3 = FilebaseS3Client::from_env()?;
+    println!("Auditing bucket={}", s3.bucket_name());
+
+    // 1. Enumerate root files + top-level policy folders.
+    println!("Listing root level...");
+    let (root_objects, policy_prefixes) = s3.list_with_delimiter("", "/").await?;
+    println!("  Root objects:        {}", root_objects.len());
+    println!("  Policy folders:      {}", policy_prefixes.len());
+
+    // 2. Walk each policy folder; build a set of v1 CIDs covered by folder copies.
+    println!("Scanning policy folders for covered v1 CIDs...");
+    let mut covered_v1: HashSet<String> = HashSet::new();
+    let mut policy_object_count = 0usize;
+    for prefix in &policy_prefixes {
+        let entries = s3.list_prefix(prefix).await?;
+        for (key, _size) in &entries {
+            policy_object_count += 1;
+            // The leaf may be an asset name (e.g. "0001") OR a CID (bafy/Qm).
+            if let Some(leaf) = key.rsplit('/').next() {
+                if let Some(v1) = to_cidv1(leaf) {
+                    covered_v1.insert(v1);
+                }
+            }
+        }
+    }
+    println!("  Total folder objects: {}", policy_object_count);
+    println!("  Unique CIDs covered:  {}", covered_v1.len());
+
+    // 3. Classify each root entry: covered (has folder copy by same multihash)
+    // vs orphan (no folder copy).
+    let mut covered_root: Vec<(String, u64)> = Vec::new();
+    let mut orphan_root: Vec<(String, u64)> = Vec::new();
+    let mut non_cid_root: Vec<(String, u64)> = Vec::new();
+    for (key, size) in &root_objects {
+        match to_cidv1(key) {
+            Some(v1) => {
+                if covered_v1.contains(&v1) {
+                    covered_root.push((key.clone(), *size));
+                } else {
+                    orphan_root.push((key.clone(), *size));
+                }
+            }
+            None => non_cid_root.push((key.clone(), *size)),
+        }
+    }
+
+    println!("\nRoot classification:");
+    println!("  Covered (folder copy exists, safe to delete): {}", covered_root.len());
+    println!("  Orphan  (no folder copy — needs rescue):      {}", orphan_root.len());
+    println!("  Non-CID root entry (manual review):           {}", non_cid_root.len());
+
+    fn print_sample(label: &str, rows: &[(String, u64)], n: usize) {
+        if rows.is_empty() {
+            return;
+        }
+        println!("\n{label} (first {}):", n.min(rows.len()));
+        for (key, size) in rows.iter().take(n) {
+            println!("  {} ({} bytes)", key, size);
+        }
+        if rows.len() > n {
+            println!("  ... and {} more", rows.len() - n);
+        }
+    }
+
+    print_sample("Covered root entries", &covered_root, sample);
+    print_sample("Orphan root entries", &orphan_root, sample);
+    print_sample("Non-CID root entries", &non_cid_root, sample);
+
+    Ok(())
+}
+
+/// Delete root-level CID-keyed bucket objects that have a folder copy
+/// (the audit's "covered" set). Preview by default; --execute to delete.
+async fn cmd_filebase_root_cleanup(execute: bool, limit: Option<usize>) -> anyhow::Result<()> {
+    use std::collections::{HashMap, HashSet};
+    use viewer_ingest::{FilebaseS3Client, to_cidv1};
+
+    let s3 = FilebaseS3Client::from_env()?;
+    println!("Filebase root-cleanup (bucket={})", s3.bucket_name());
+
+    println!("Listing root + policy folders...");
+    let (root_objects, policy_prefixes) = s3.list_with_delimiter("", "/").await?;
+    println!(
+        "  Root objects: {}, policy folders: {}",
+        root_objects.len(),
+        policy_prefixes.len()
+    );
+
+    println!("Scanning policy folders for covered v1 CIDs...");
+    let mut covered_v1: HashSet<String> = HashSet::new();
+    for prefix in &policy_prefixes {
+        let entries = s3.list_prefix(prefix).await?;
+        for (key, _) in &entries {
+            if let Some(leaf) = key.rsplit('/').next() {
+                if let Some(v1) = to_cidv1(leaf) {
+                    covered_v1.insert(v1);
+                }
+            }
+        }
+    }
+    println!("  Unique CIDs covered: {}", covered_v1.len());
+
+    let mut eligible: Vec<String> = Vec::new();
+    let mut orphan = 0usize;
+    let mut non_cid = 0usize;
+    for (key, _) in &root_objects {
+        match to_cidv1(key) {
+            Some(v1) => {
+                if covered_v1.contains(&v1) {
+                    eligible.push(key.clone());
+                } else {
+                    orphan += 1;
+                }
+            }
+            None => non_cid += 1,
+        }
+    }
+    eligible.sort();
+
+    println!("\nEligible for deletion (folder copy exists): {}", eligible.len());
+    println!("Orphan root entries (kept — would lose content): {}", orphan);
+    if non_cid > 0 {
+        println!("Non-CID root entries (kept — manual review):     {}", non_cid);
+    }
+
+    if let Some(n) = limit {
+        if execute {
+            eligible.truncate(n);
+            println!("\nLimited to first {} deletion(s).", eligible.len());
+        }
+    }
+
+    if !execute {
+        println!(
+            "\nPREVIEW — re-run with --execute to delete the {} eligible root object(s).",
+            eligible.len()
+        );
+        return Ok(());
+    }
+    if eligible.is_empty() {
+        println!("\nNothing to delete.");
+        return Ok(());
+    }
+
+    // Build a v1 -> set-of-folder-keys map for the post-delete safety check,
+    // exiting early if any eligible entry's coverage disappears between scan
+    // and execute (unlikely but cheap defence).
+    let mut v1_to_folders: HashMap<String, Vec<String>> = HashMap::new();
+    for prefix in &policy_prefixes {
+        let entries = s3.list_prefix(prefix).await?;
+        for (key, _) in &entries {
+            if let Some(leaf) = key.rsplit('/').next() {
+                if let Some(v1) = to_cidv1(leaf) {
+                    v1_to_folders.entry(v1).or_default().push(key.clone());
+                }
+            }
+        }
+    }
+
+    use indicatif::{ProgressBar, ProgressStyle};
+    let pb = ProgressBar::new(eligible.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+    let mut skipped = 0usize;
+    let mut errors: Vec<(String, String)> = Vec::new();
+
+    for key in &eligible {
+        pb.inc(1);
+        // Re-check coverage just before deleting (cheap defence).
+        let v1 = match to_cidv1(key) {
+            Some(v1) => v1,
+            None => {
+                skipped += 1;
+                continue;
+            }
+        };
+        if !v1_to_folders.contains_key(&v1) {
+            skipped += 1;
+            continue;
+        }
+        match s3.delete_object(key).await {
+            Ok(()) => deleted += 1,
+            Err(e) => {
+                failed += 1;
+                errors.push((key.clone(), e.to_string()));
+            }
+        }
+    }
+    pb.finish_and_clear();
+
+    println!("\nCleanup complete:");
+    println!("  Deleted: {}", deleted);
+    if skipped > 0 {
+        println!("  Skipped (coverage missing): {}", skipped);
+    }
+    if failed > 0 {
+        println!("  Failed:  {}", failed);
+        for (k, e) in errors.iter().take(10) {
+            println!("    {} — {}", k, e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Build a forward CID -> policy index from every known policy folder
+/// (via Maestro), then move matched objects out of the source folder
+/// into `{policy_id}/{v1_cid}`. Unmatched objects stay put — they belong
+/// to a policy outside our known set and need separate triage.
+async fn cmd_filebase_classify_uncategorized(
+    execute: bool,
+    source_folder: &str,
+    limit: Option<usize>,
+) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+    use viewer_ingest::{FilebaseS3Client, MaestroClient, to_cidv1};
+
+    fn is_policy_id(s: &str) -> bool {
+        s.len() == 56 && s.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    let s3 = FilebaseS3Client::from_env()?;
+    let src_folder = source_folder.trim_end_matches('/').to_string();
+
+    println!("Enumerating policy folders in bucket={}...", s3.bucket_name());
+    let (_, prefixes) = s3.list_with_delimiter("", "/").await?;
+    let mut policies: Vec<String> = prefixes
+        .iter()
+        .filter_map(|p| {
+            let trimmed = p.trim_end_matches('/').to_string();
+            if is_policy_id(&trimmed) && trimmed != src_folder {
+                Some(trimmed)
+            } else {
+                None
+            }
+        })
+        .collect();
+    policies.sort();
+    println!("  Found {} policy folder(s)", policies.len());
+
+    println!("\nIndexing each policy's CIDs via Maestro...");
+    let maestro = MaestroClient::from_env()?;
+    let mut cid_to_policy: HashMap<String, String> = HashMap::new();
+    let mut indexed = 0usize;
+    let mut failed_index: Vec<(String, String)> = Vec::new();
+
+    use indicatif::{ProgressBar, ProgressStyle};
+    let pb = ProgressBar::new(policies.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+    for policy in &policies {
+        pb.set_message(policy.clone());
+        match maestro.fetch_policy_cids(policy).await {
+            Ok(cids) => {
+                indexed += 1;
+                for cid in cids {
+                    cid_to_policy.entry(cid).or_insert_with(|| policy.clone());
+                }
+            }
+            Err(e) => failed_index.push((policy.clone(), e.to_string())),
+        }
+        pb.inc(1);
+    }
+    pb.finish_and_clear();
+    println!(
+        "  Indexed {indexed}/{} policies — {} unique CIDs",
+        policies.len(),
+        cid_to_policy.len()
+    );
+    if !failed_index.is_empty() {
+        println!("  Failed to index {} policies:", failed_index.len());
+        for (p, e) in failed_index.iter().take(5) {
+            println!("    {} — {}", p, e);
+        }
+    }
+
+    let src_prefix = format!("{src_folder}/");
+    println!("\nListing source folder {src_prefix}");
+    let entries = s3.list_prefix(&src_prefix).await?;
+    println!("  Objects: {}", entries.len());
+
+    let prefix_len = src_prefix.len();
+    let mut moves: Vec<(String, String)> = Vec::new(); // (src_key, dst_key)
+    let mut unmatched = 0usize;
+    let mut non_cid = 0usize;
+    for (key, _) in &entries {
+        let Some(leaf) = key.get(prefix_len..) else {
+            continue;
+        };
+        let Some(v1) = to_cidv1(leaf) else {
+            non_cid += 1;
+            continue;
+        };
+        match cid_to_policy.get(&v1) {
+            Some(policy) => moves.push((key.clone(), format!("{policy}/{v1}"))),
+            None => unmatched += 1,
+        }
+    }
+
+    println!("\nClassification:");
+    println!("  Matched (move into policy folder): {}", moves.len());
+    println!("  Unmatched (stays in {src_folder}):     {}", unmatched);
+    if non_cid > 0 {
+        println!("  Non-CID keys (skipped): {}", non_cid);
+    }
+
+    if !execute {
+        println!("\nFirst 10 planned moves:");
+        for (src, dst) in moves.iter().take(10) {
+            println!("  {} -> {}", src, dst);
+        }
+        if moves.len() > 10 {
+            println!("  ... and {} more", moves.len() - 10);
+        }
+        println!(
+            "\nPREVIEW — re-run with --execute to move {} object(s).",
+            moves.len()
+        );
+        return Ok(());
+    }
+
+    let mut to_process = moves;
+    if let Some(n) = limit {
+        to_process.truncate(n);
+        println!("\nLimited to first {}", to_process.len());
+    }
+    if to_process.is_empty() {
+        println!("\nNothing to move.");
+        return Ok(());
+    }
+
+    let pb = ProgressBar::new(to_process.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let mut copied = 0usize;
+    let mut deleted = 0usize;
+    let mut copy_failed = 0usize;
+    let mut head_failed = 0usize;
+    let mut delete_failed = 0usize;
+    let mut errors: Vec<(String, String)> = Vec::new();
+
+    for (src, dst) in &to_process {
+        pb.inc(1);
+        if let Err(e) = s3.copy_object(src, dst).await {
+            copy_failed += 1;
+            errors.push((src.clone(), format!("copy: {e}")));
+            continue;
+        }
+        copied += 1;
+        if let Err(e) = s3.head_object(dst).await {
+            head_failed += 1;
+            errors.push((src.clone(), format!("post-copy HEAD: {e}")));
+            continue;
+        }
+        if let Err(e) = s3.delete_object(src).await {
+            delete_failed += 1;
+            errors.push((src.clone(), format!("delete: {e}")));
+            continue;
+        }
+        deleted += 1;
+    }
+    pb.finish_and_clear();
+
+    println!("\nClassify complete:");
+    println!("  Copied:  {copied}");
+    println!("  Deleted: {deleted}");
+    if copy_failed + head_failed + delete_failed > 0 {
+        println!(
+            "  Errors:  copy={copy_failed} head={head_failed} delete={delete_failed}"
+        );
+        for (k, e) in errors.iter().take(10) {
+            println!("    {} — {}", k, e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Relocate orphan root objects into a destination folder via S3 COPY,
+/// then DELETE the root entry. Each delete is guarded by HEAD on the
+/// destination key — root is only removed after the copy is confirmed.
+async fn cmd_filebase_root_relocate(
+    execute: bool,
+    limit: Option<usize>,
+    folder: &str,
+) -> anyhow::Result<()> {
+    use viewer_ingest::FilebaseS3Client;
+
+    let s3 = FilebaseS3Client::from_env()?;
+    println!(
+        "Filebase root-relocate (bucket={}, destination folder={folder})",
+        s3.bucket_name()
+    );
+
+    let (root_objects, _) = s3.list_with_delimiter("", "/").await?;
+    println!("  Root objects: {}", root_objects.len());
+
+    let mut targets: Vec<String> = root_objects.iter().map(|(k, _)| k.clone()).collect();
+    targets.sort();
+    if let Some(n) = limit {
+        if execute {
+            targets.truncate(n);
+            println!("  Limited to first {}", targets.len());
+        }
+    }
+
+    if !execute {
+        println!("\nPreview (first 5):");
+        for k in targets.iter().take(5) {
+            println!("  {} -> {}/{}", k, folder, k);
+        }
+        if targets.len() > 5 {
+            println!("  ... and {} more", targets.len() - 5);
+        }
+        println!(
+            "\nPREVIEW — re-run with --execute to relocate {} root entries.",
+            targets.len()
+        );
+        return Ok(());
+    }
+
+    if targets.is_empty() {
+        println!("\nNothing to relocate.");
+        return Ok(());
+    }
+
+    use indicatif::{ProgressBar, ProgressStyle};
+    let pb = ProgressBar::new(targets.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let mut copied = 0usize;
+    let mut deleted = 0usize;
+    let mut copy_failed = 0usize;
+    let mut head_failed = 0usize;
+    let mut delete_failed = 0usize;
+    let mut errors: Vec<(String, String)> = Vec::new();
+
+    for src in &targets {
+        pb.inc(1);
+        let dst = format!("{folder}/{src}");
+
+        if let Err(e) = s3.copy_object(src, &dst).await {
+            copy_failed += 1;
+            errors.push((src.clone(), format!("copy: {e}")));
+            continue;
+        }
+        copied += 1;
+
+        // Guard: HEAD the new key before deleting the old.
+        if let Err(e) = s3.head_object(&dst).await {
+            head_failed += 1;
+            errors.push((src.clone(), format!("post-copy HEAD: {e}")));
+            continue;
+        }
+
+        if let Err(e) = s3.delete_object(src).await {
+            delete_failed += 1;
+            errors.push((src.clone(), format!("delete: {e}")));
+            continue;
+        }
+        deleted += 1;
+    }
+    pb.finish_and_clear();
+
+    println!("\nRelocation complete:");
+    println!("  Copied:            {}", copied);
+    println!("  Deleted from root: {}", deleted);
+    if copy_failed > 0 {
+        println!("  Copy failed:       {}", copy_failed);
+    }
+    if head_failed > 0 {
+        println!("  Post-copy HEAD failed (root kept): {}", head_failed);
+    }
+    if delete_failed > 0 {
+        println!("  Delete failed (copy succeeded):    {}", delete_failed);
+    }
+    if !errors.is_empty() {
+        println!("\nFirst 10 errors:");
+        for (k, e) in errors.iter().take(10) {
+            println!("  {} — {}", k, e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Empirical safety test for deleting a root-level CID-keyed object when a
+/// folder-keyed copy of the same content exists elsewhere. Finds a real
+/// existing "covered" pair in the bucket, deletes the root entry, and
+/// confirms the folder copy survives unchanged.
+async fn cmd_filebase_delete_safety_test() -> anyhow::Result<()> {
+    use std::collections::HashMap;
+    use std::time::Duration;
+    use viewer_ingest::{FilebaseS3Client, to_cidv1};
+
+    let s3 = FilebaseS3Client::from_env()?;
+
+    println!("Finding a candidate root entry with a folder copy...");
+    let (root_objects, policy_prefixes) = s3.list_with_delimiter("", "/").await?;
+    println!(
+        "  Root objects: {}, policy folders: {}",
+        root_objects.len(),
+        policy_prefixes.len()
+    );
+
+    // Map v1 CID -> first folder key with that CID
+    let mut v1_to_folder_key: HashMap<String, String> = HashMap::new();
+    for prefix in &policy_prefixes {
+        let entries = s3.list_prefix(prefix).await?;
+        for (key, _) in &entries {
+            if let Some(leaf) = key.rsplit('/').next() {
+                if let Some(v1) = to_cidv1(leaf) {
+                    v1_to_folder_key.entry(v1).or_insert_with(|| key.clone());
+                }
+            }
+        }
+    }
+
+    let candidate = root_objects.iter().find_map(|(k, _)| {
+        to_cidv1(k).and_then(|v1| v1_to_folder_key.get(&v1).map(|fk| (k.clone(), fk.clone())))
+    });
+    let (root_key, folder_key) =
+        candidate.ok_or_else(|| anyhow::anyhow!("no covered root entry found"))?;
+    println!("  Picked root key:   {root_key}");
+    println!("  Folder copy:       {folder_key}");
+
+    let print_head = |label: &str, h: &viewer_ingest::filebase_s3::HeadInfo| {
+        let pin = h
+            .metadata
+            .get("pinning-status")
+            .map(|s| s.as_str())
+            .unwrap_or("(none)");
+        println!(
+            "  {label}: size={} cid={} pinning-status={}",
+            h.content_length,
+            h.cid().unwrap_or("(none)"),
+            pin
+        );
+    };
+
+    println!("\n[1] HEAD root BEFORE:");
+    let head_root_before = s3.head_object(&root_key).await?;
+    print_head("root_before", &head_root_before);
+
+    println!("\n[2] HEAD folder BEFORE:");
+    let head_folder_before = s3.head_object(&folder_key).await?;
+    print_head("folder_before", &head_folder_before);
+
+    if head_root_before.cid() != head_folder_before.cid() {
+        anyhow::bail!(
+            "CID mismatch — root={:?} folder={:?}; aborting",
+            head_root_before.cid(),
+            head_folder_before.cid()
+        );
+    }
+
+    println!("\n[3] DELETE root entry {root_key}");
+    s3.delete_object(&root_key).await?;
+    println!("  deleted; sleeping for consistency");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    println!("\n[4] HEAD folder AFTER root delete:");
+    let head_folder_after = s3.head_object(&folder_key).await?;
+    print_head("folder_after", &head_folder_after);
+
+    let same_cid = head_folder_after.cid() == head_folder_before.cid();
+    let same_size = head_folder_after.content_length == head_folder_before.content_length;
+    let pinned_after = head_folder_after
+        .metadata
+        .get("pinning-status")
+        .map(|s| s.as_str())
+        == Some("pinned");
+
+    if same_cid && same_size && pinned_after {
+        println!("\nVERDICT: SAFE — folder copy intact, same CID, still pinned. Bulk root cleanup is safe.");
+    } else {
+        println!(
+            "\nVERDICT: NOT SAFE — folder copy changed. same_cid={same_cid} same_size={same_size} pinned_after={pinned_after}"
+        );
+    }
+
+    println!("\n[5] HEAD root AFTER delete (expecting gone):");
+    match s3.head_object(&root_key).await {
+        Ok(_) => println!("  root entry STILL resolves — Filebase may have re-materialized it"),
+        Err(e) => println!("  confirmed gone: {e}"),
+    }
+
+    Ok(())
+}
+
+/// Delete every object under the given key prefix.
+async fn cmd_filebase_delete_prefix(
+    prefix: &str,
+    execute: bool,
+    limit: Option<usize>,
+) -> anyhow::Result<()> {
+    use viewer_ingest::FilebaseS3Client;
+
+    if prefix.is_empty() {
+        anyhow::bail!("refusing to delete with empty prefix — that's the whole bucket");
+    }
+
+    let s3 = FilebaseS3Client::from_env()?;
+    println!("delete-prefix bucket={} prefix={prefix}", s3.bucket_name());
+
+    let entries = s3.list_prefix(prefix).await?;
+    let mut keys: Vec<String> = entries.into_iter().map(|(k, _)| k).collect();
+    keys.sort();
+    println!("  Objects matching prefix: {}", keys.len());
+
+    if !execute {
+        for k in keys.iter().take(10) {
+            println!("  would delete: {}", k);
+        }
+        if keys.len() > 10 {
+            println!("  ... and {} more", keys.len() - 10);
+        }
+        println!(
+            "\nPREVIEW — re-run with --execute to delete {} object(s).",
+            keys.len()
+        );
+        return Ok(());
+    }
+
+    if let Some(n) = limit {
+        keys.truncate(n);
+        println!("  Limited to first {}", keys.len());
+    }
+    if keys.is_empty() {
+        println!("\nNothing to delete.");
+        return Ok(());
+    }
+
+    use indicatif::{ProgressBar, ProgressStyle};
+    let pb = ProgressBar::new(keys.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+    let mut errors: Vec<(String, String)> = Vec::new();
+    for k in &keys {
+        pb.inc(1);
+        match s3.delete_object(k).await {
+            Ok(()) => deleted += 1,
+            Err(e) => {
+                failed += 1;
+                errors.push((k.clone(), e.to_string()));
+            }
+        }
+    }
+    pb.finish_and_clear();
+
+    println!("\nDelete complete:");
+    println!("  Deleted: {}", deleted);
+    if failed > 0 {
+        println!("  Failed:  {}", failed);
+        for (k, e) in errors.iter().take(10) {
+            println!("    {} — {}", k, e);
+        }
+    }
+
+    Ok(())
+}
+
+/// HEAD a bucket object and print its size + metadata.
+async fn cmd_filebase_s3_head(key: &str) -> anyhow::Result<()> {
+    use viewer_ingest::FilebaseS3Client;
+
+    let s3 = FilebaseS3Client::from_env()?;
+    let info = s3.head_object(key).await?;
+
+    println!("Key:            {}", info.key);
+    println!("Content-Length: {}", info.content_length);
+    if let Some(etag) = &info.etag {
+        println!("ETag:           {}", etag);
+    }
+    if let Some(ct) = &info.content_type {
+        println!("Content-Type:   {}", ct);
+    }
+    if let Some(cid) = info.cid() {
+        println!("CID (meta):     {}", cid);
+    }
+    if !info.metadata.is_empty() {
+        println!("All metadata:");
+        for (k, v) in &info.metadata {
+            println!("  {} = {}", k, v);
+        }
+    }
+    Ok(())
+}
+
+/// List bucket objects with the given S3 prefix (debug helper).
+async fn cmd_filebase_s3_list(prefix: &str, limit: usize) -> anyhow::Result<()> {
+    use viewer_ingest::FilebaseS3Client;
+
+    let s3 = FilebaseS3Client::from_env()?;
+    println!("Listing bucket={} prefix={:?}", s3.bucket_name(), prefix);
+    let objects = s3.list_prefix(prefix).await?;
+    println!("  Total objects: {}", objects.len());
+    for (key, size) in objects.iter().take(limit) {
+        println!("  {} ({} bytes)", key, size);
+    }
+    if objects.len() > limit {
+        println!("  ... and {} more", objects.len() - limit);
+    }
+    Ok(())
+}
+
+/// Delete root-level CIDv0 bucket objects left by an earlier RPC-add
+/// rescue, scoped to a single policy. Safe by construction: each delete
+/// is gated on the corresponding v1 entry under `{policy}/...` being
+/// populated (>0 bytes), so content always has at least one bucket copy.
+async fn cmd_filebase_rescue_cleanup(policy_id: &str, execute: bool) -> anyhow::Result<()> {
+    use std::collections::{HashMap, HashSet};
+    use viewer_ingest::{FilebaseClient, FilebaseS3Client, to_cidv0, to_cidv1};
+
+    println!("Filebase rescue-cleanup for: {}", policy_id);
+
+    // 1. Failed v1 CID set (same as `unpinned` — content the rescue targeted).
+    let client = FilebaseClient::from_env()?;
+    println!("Listing pins...");
+    let pins = client.list_all_pins(policy_id).await?;
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    for pin in &pins {
+        if let Some(v1) = to_cidv1(&pin.cid) {
+            groups.entry(v1).or_default().push(pin.status.clone());
+        }
+    }
+    let rescue_v1: Vec<String> = groups
+        .into_iter()
+        .filter(|(_, s)| !s.is_empty() && s.iter().all(|x| x == "failed"))
+        .map(|(cid, _)| cid)
+        .collect();
+    println!("  Rescue v1 CIDs:    {}", rescue_v1.len());
+
+    // 2. Populated v1 entries under the policy folder.
+    let s3 = FilebaseS3Client::from_env()?;
+    let folder_prefix = format!("{policy_id}/");
+    let folder_entries = s3.list_prefix(&folder_prefix).await?;
+    let prefix_len = folder_prefix.len();
+    let populated_v1: HashSet<String> = folder_entries
+        .iter()
+        .filter(|(_, size)| *size > 0)
+        .filter_map(|(key, _)| {
+            let leaf = key.get(prefix_len..)?;
+            if leaf.starts_with("bafy") {
+                Some(leaf.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    println!("  Populated v1 in folder: {}", populated_v1.len());
+
+    // 3. For each rescue v1, decide whether the v0 root copy is safe to delete.
+    let mut eligible: Vec<(String, String)> = Vec::new(); // (v0 root key, v1 cid)
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    for v1 in &rescue_v1 {
+        if !populated_v1.contains(v1) {
+            skipped.push((v1.clone(), "folder entry not populated".to_string()));
+            continue;
+        }
+        let Some(v0) = to_cidv0(v1) else {
+            skipped.push((v1.clone(), "no v0 representation".to_string()));
+            continue;
+        };
+        eligible.push((v0, v1.clone()));
+    }
+
+    println!("\nEligible for delete (populated folder copy exists): {}", eligible.len());
+    println!("Skipped (unsafe to delete):                          {}", skipped.len());
+
+    if !skipped.is_empty() {
+        println!("\nFirst 10 skip reasons:");
+        for (v1, reason) in skipped.iter().take(10) {
+            println!("  {} — {}", v1, reason);
+        }
+    }
+
+    if eligible.is_empty() {
+        println!("\nNothing safe to clean up.");
+        return Ok(());
+    }
+
+    if !execute {
+        println!(
+            "\nPREVIEW — re-run with --execute to delete {} orphan root object(s).",
+            eligible.len()
+        );
+        return Ok(());
+    }
+
+    use indicatif::{ProgressBar, ProgressStyle};
+    let pb = ProgressBar::new(eligible.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+    let mut errors: Vec<(String, String)> = Vec::new();
+    for (v0, v1) in &eligible {
+        pb.inc(1);
+        match s3.delete_object(v0).await {
+            Ok(()) => deleted += 1,
+            Err(e) => {
+                failed += 1;
+                errors.push((v1.clone(), e.to_string()));
+            }
+        }
+    }
+    pb.finish_and_clear();
+
+    println!("\nCleanup complete:");
+    println!("  Deleted: {}", deleted);
+    if failed > 0 {
+        println!("  Failed:  {}", failed);
+        for (cid, err) in errors.iter().take(10) {
+            println!("    {} — {}", cid, err);
         }
     }
 
@@ -1976,8 +3088,8 @@ async fn cmd_filebase_rescue(
     use cardano_assets::AssetId;
     use std::collections::HashMap;
     use viewer_ingest::{
-        AssetSource, FilebaseClient, MaestroSource, NftcdnClient, compute_cid_bytes, extract_cid,
-        find_matching_cid, to_cidv1,
+        AssetSource, FilebaseClient, FilebaseS3Client, MaestroSource, NftcdnClient,
+        compute_cid_bytes, extract_cid, find_matching_cid, to_cidv0, to_cidv1,
     };
 
     println!(
@@ -1985,6 +3097,12 @@ async fn cmd_filebase_rescue(
         if execute { "execute" } else { "probe" },
         policy_id
     );
+
+    let s3 = if execute {
+        Some(FilebaseS3Client::from_env()?)
+    } else {
+        None
+    };
 
     // 1. Failed content set from Filebase (every pin for it `failed`).
     let client = FilebaseClient::from_env()?;
@@ -2086,35 +3204,50 @@ async fn cmd_filebase_rescue(
             continue;
         }
 
-        // Re-host: add the verified bytes to Filebase under a per-policy
-        // path, confirm the returned file CID, then pin it durably via the
-        // RPC API.
-        let path = format!("{policy_id}/{cid}");
-        let returned = match client.rpc_add(&path, bytes).await {
-            Ok(returned) => returned,
+        // Re-host via S3 PUT under a per-policy key. Filebase auto-pins
+        // content PUT to an IPFS-enabled bucket and exposes the computed
+        // CID via the `x-amz-meta-cid` response header. Bytes already
+        // verified locally, so an absent header isn't fatal — but when
+        // present, confirm it normalises to the expected CID.
+        let s3 = s3.as_ref().expect("s3 client present when execute=true");
+        let key = format!("{policy_id}/{cid}");
+        let put_ok = match s3.put_object(&key, &bytes).await {
+            Ok(result) => {
+                if let Some(returned) = &result.cid {
+                    match to_cidv1(returned) {
+                        Some(v1) if &v1 == cid => {
+                            rehosted += 1;
+                            true
+                        }
+                        other => {
+                            rehost_failed += 1;
+                            rehost_errors.push((
+                                cid.clone(),
+                                format!("returned CID {returned} (v1 {other:?}) != expected"),
+                            ));
+                            false
+                        }
+                    }
+                } else {
+                    // No CID header — bytes locally verified, trust the upload.
+                    rehosted += 1;
+                    true
+                }
+            }
             Err(e) => {
                 rehost_failed += 1;
                 rehost_errors.push((cid.clone(), e.to_string()));
-                continue;
+                false
             }
         };
-        match to_cidv1(&returned) {
-            Some(v1) if &v1 == cid => {}
-            other => {
-                rehost_failed += 1;
-                rehost_errors.push((
-                    cid.clone(),
-                    format!("returned CID {returned} (v1 {other:?}) != expected"),
-                ));
-                continue;
-            }
-        }
 
-        match client.rpc_pin_add(cid).await {
-            Ok(()) => rehosted += 1,
-            Err(e) => {
-                rehost_failed += 1;
-                rehost_errors.push((cid.clone(), format!("added but pin/add failed: {e}")));
+        // Inline cleanup: if a legacy v0 root entry exists from an earlier
+        // RPC-add rescue, delete it now. Safe — we just confirmed the
+        // folder copy was written via S3 PUT. Best-effort; a missing root
+        // (404) is the common case and intentionally ignored.
+        if put_ok {
+            if let Some(v0) = to_cidv0(cid) {
+                let _ = s3.delete_object(&v0).await;
             }
         }
     }

@@ -1,0 +1,11 @@
+# BlockGen Auth.Master
+# Policy ID: eecdee370959fa0725f1b6a08f174a98b3387cb900015ba3e448f578
+
+slug = "blockgen-auth-master"
+name = "BlockGen Auth.Master"
+
+[traits]
+ignore = []
+
+[rarity]
+exclude = []

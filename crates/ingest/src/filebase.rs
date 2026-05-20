@@ -76,6 +76,7 @@ pub struct PinRecord {
     pub requestid: String,
     pub cid: String,
     pub status: String,
+    pub name: Option<String>,
 }
 
 /// Pin counts by Pinning Service status for a single collection.
@@ -358,12 +359,62 @@ impl FilebaseClient {
                         requestid: entry.requestid,
                         cid: entry.pin.cid,
                         status: entry.status,
+                        name: entry.pin.name,
                     });
                 }
             }
 
             // Stop on a short page, or if a full page yielded no new records
             // (a pathological all-same-timestamp boundary) to avoid looping.
+            if page_len < PAGE as usize || records.len() == before_count {
+                break;
+            }
+            match oldest {
+                Some(ts) => before = Some(ts),
+                None => break,
+            }
+        }
+
+        Ok(records)
+    }
+
+    /// Bucket-wide variant of `list_all_pins` for a single status. Pages
+    /// through `GET /pins?status={status}` with no name filter, so it
+    /// surfaces pins for every policy in the bucket.
+    pub async fn list_all_pins_with_status_global(
+        &self,
+        status: &str,
+    ) -> Result<Vec<PinRecord>, FilebaseError> {
+        use std::collections::HashSet;
+
+        const PAGE: u32 = 1000;
+        let mut records = Vec::new();
+        let mut seen = HashSet::new();
+        let mut before: Option<String> = None;
+
+        loop {
+            let query = PinListQuery {
+                status: Some(status.to_string()),
+                before: before.clone(),
+                limit: PAGE,
+                ..Default::default()
+            };
+            let resp = self.api.list_pins(&query).await?;
+            let page_len = resp.results.len();
+            let oldest = resp.results.last().map(|e| e.created.clone());
+
+            let before_count = records.len();
+            for entry in resp.results {
+                if seen.insert(entry.requestid.clone()) {
+                    records.push(PinRecord {
+                        requestid: entry.requestid,
+                        cid: entry.pin.cid,
+                        status: entry.status,
+                        name: entry.pin.name,
+                    });
+                }
+            }
+
             if page_len < PAGE as usize || records.len() == before_count {
                 break;
             }

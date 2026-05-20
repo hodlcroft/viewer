@@ -115,6 +115,55 @@ impl MaestroClient {
 
         response.json().await.map_err(MaestroError::Request)
     }
+
+    /// Page every asset in a policy, run each parseable CIP-25/CIP-68
+    /// metadata through `AssetMetadata::extract_cids`, and return the
+    /// CIDv1-normalised deduped set — the same shape `ownership.cnft.dev`
+    /// produces, but driven locally so the patched `cardano-assets` is
+    /// used without needing the worker to redeploy.
+    pub async fn fetch_policy_cids(&self, policy_id: &str) -> Result<Vec<String>, MaestroError> {
+        use cardano_assets::AssetMetadata;
+        use std::collections::HashSet;
+
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let page = self
+                .fetch_policy_assets_page(policy_id, cursor.as_deref())
+                .await?;
+
+            for asset in page.data {
+                let Some(standards) = asset.asset_standards else {
+                    continue;
+                };
+                let metadata_value = if let Some(cip25) = standards.cip25_metadata {
+                    cip25
+                } else if let Some(env) = standards.cip68_metadata {
+                    env.metadata
+                } else {
+                    continue;
+                };
+                let Ok(metadata) = serde_json::from_value::<AssetMetadata>(metadata_value) else {
+                    continue;
+                };
+                for extracted in metadata.extract_cids() {
+                    if seen.insert(extracted.cid.clone()) {
+                        out.push(extracted.cid);
+                    }
+                }
+            }
+
+            match page.next_cursor {
+                Some(c) if !c.is_empty() => cursor = Some(c),
+                _ => break,
+            }
+        }
+
+        out.sort();
+        Ok(out)
+    }
 }
 
 /// Response shape for `/policy/{id}/assets`.

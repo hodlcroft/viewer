@@ -27,6 +27,24 @@ pub fn to_cidv1(cid_str: &str) -> Option<String> {
     Some(cidv1.to_string())
 }
 
+/// Convert a CID (v0 or v1) to CIDv0 string when possible.
+///
+/// CIDv0 only supports dag-pb + sha-256; v1 CIDs using any other codec
+/// (e.g. `raw`) have no v0 representation, so this returns `None` for them.
+pub fn to_cidv0(cid_str: &str) -> Option<String> {
+    const DAG_PB: u64 = 0x70;
+    let cid = Cid::from_str(cid_str).ok()?;
+    let cidv0 = if cid.version() == cid::Version::V1 {
+        if cid.codec() != DAG_PB {
+            return None;
+        }
+        Cid::new_v0(cid.hash().to_owned()).ok()?
+    } else {
+        cid
+    };
+    Some(cidv0.to_string())
+}
+
 /// Extract a CID from a string that may be a bare CID or an IPFS URL.
 ///
 /// Handles formats like:

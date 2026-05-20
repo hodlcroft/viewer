@@ -13,6 +13,7 @@ cnft_tools = { workspace = true }
 cardano-assets = { workspace = true, features = ["cip14"] }
 filebase_sdk = { workspace = true }
 platform-types = { workspace = true }
+rust-s3 = { version = "0.35", default-features = false, features = ["tokio-rustls-tls"] }
 
 tokio = { workspace = true }
 reqwest = { workspace = true }
