@@ -66,20 +66,19 @@ gloo-timers = "0.3"
 js-sys = "0.3"
 
 # shared-crates (all pinned to same rev)
-worker_utils = { git = "https://github.com/defrag-au/shared-crates", package = "worker_utils", rev = "24b37e08621af7b1f7abcc8aecc9dc78988dc48f" }
-worker_stack = { git = "https://github.com/defrag-au/shared-crates", package = "worker_stack", rev = "24b37e08621af7b1f7abcc8aecc9dc78988dc48f" }
-test_utils = { git = "https://github.com/defrag-au/shared-crates", package = "test_utils", rev = "24b37e08621af7b1f7abcc8aecc9dc78988dc48f" }
-cnft_tools = { git = "https://github.com/defrag-au/shared-crates", package = "cnft_tools", rev = "24b37e08621af7b1f7abcc8aecc9dc78988dc48f" }
-cardano-assets = { git = "https://github.com/defrag-au/shared-crates", rev = "24b37e08621af7b1f7abcc8aecc9dc78988dc48f" }
-asset-rarity = { git = "https://github.com/defrag-au/shared-crates", rev = "24b37e08621af7b1f7abcc8aecc9dc78988dc48f" }
-wallet-leptos = { git = "https://github.com/defrag-au/shared-crates", rev = "24b37e08621af7b1f7abcc8aecc9dc78988dc48f" }
-wallet-pallas = { git = "https://github.com/defrag-au/shared-crates", rev = "24b37e08621af7b1f7abcc8aecc9dc78988dc48f" }
-wallet-core = { git = "https://github.com/defrag-au/shared-crates", rev = "24b37e08621af7b1f7abcc8aecc9dc78988dc48f" }
+worker_utils = { git = "https://github.com/defrag-au/shared-crates", package = "worker_utils", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
+worker_stack = { git = "https://github.com/defrag-au/shared-crates", package = "worker_stack", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
+test_utils = { git = "https://github.com/defrag-au/shared-crates", package = "test_utils", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
+cnft_tools = { git = "https://github.com/defrag-au/shared-crates", package = "cnft_tools", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
+cardano-assets = { git = "https://github.com/defrag-au/shared-crates", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
+asset-rarity = { git = "https://github.com/defrag-au/shared-crates", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
+wallet-leptos = { git = "https://github.com/defrag-au/shared-crates", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
+wallet-pallas = { git = "https://github.com/defrag-au/shared-crates", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
+wallet-core = { git = "https://github.com/defrag-au/shared-crates", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
 
-# Local path during the Filebase experiment; promote to git rev once landed in shared-crates.
 # Renamed to avoid collision with the local `filebase` module in viewer-ingest.
-filebase_sdk = { package = "filebase", path = "../../defrag/shared-crates/filebase" }
-platform-types = { git = "https://github.com/defrag-au/shared-crates", package = "platform-types", rev = "24b37e08621af7b1f7abcc8aecc9dc78988dc48f" }
+filebase_sdk = { package = "filebase", git = "https://github.com/defrag-au/shared-crates", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
+platform-types = { git = "https://github.com/defrag-au/shared-crates", package = "platform-types", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
 
 # shared-ui (for ui-core)
 ui-core = { git = "https://github.com/defrag-au/shared-ui", rev = "24cc859" }
@@ -91,10 +90,10 @@ futures = "0.3"
 urlencoding = "2"
 base64 = "0.22.1"
 
-# Local overrides for development
+# Local overrides for development (uncomment a line to build against a local checkout)
 [patch."https://github.com/defrag-au/shared-crates"]
 # cnft_tools = { path = "/Users/damo/code/defrag/shared-crates/cnft-tools" }
-cardano-assets = { path = "/Users/damo/code/defrag/shared-crates/cardano-assets" }
+# cardano-assets = { path = "/Users/damo/code/defrag/shared-crates/cardano-assets" }
 # asset-rarity = { path = "/Users/damo/code/defrag/shared-crates/asset-rarity" }
 # wallet-leptos = { path = "/Users/damo/code/defrag/shared-crates/ui/wallet-leptos" }
 # wallet-pallas = { path = "/Users/damo/code/defrag/shared-crates/ui/wallet-pallas" }
