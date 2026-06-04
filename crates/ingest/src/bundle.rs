@@ -300,7 +300,7 @@ mod tests {
             HcfBundler::bundle_batch(config, &image_paths, &output_dir, |_, _| {}).unwrap();
 
         assert_eq!(result.locations.len(), 5);
-        assert!(result.shards.len() >= 1);
+        assert!(!result.shards.is_empty());
 
         // Verify first location
         assert_eq!(result.locations[0].global_offset, 0);

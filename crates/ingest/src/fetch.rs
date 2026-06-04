@@ -136,11 +136,10 @@ pub async fn fetch_images(
         pipeline.state.images_failed = current_failed;
 
         // Report progress via callback (for CLI output)
-        if let Some(ref callback) = on_progress {
-            if (batch_idx + 1) % 5 == 0 || processed == total {
+        if let Some(ref callback) = on_progress
+            && ((batch_idx + 1) % 5 == 0 || processed == total) {
                 callback(processed, total, current_fetched, current_failed);
             }
-        }
 
         // Save state periodically
         if (batch_idx + 1) % 10 == 0 {
@@ -524,14 +523,13 @@ pub async fn fetch_thumbnails_pinata(
                     let processed = current_fetched + current_skipped + current_failed;
                     let last = last_reported.load(Ordering::Relaxed);
 
-                    if processed >= last + PROGRESS_INTERVAL || processed == total {
-                        if last_reported
+                    if (processed >= last + PROGRESS_INTERVAL || processed == total)
+                        && last_reported
                             .compare_exchange(last, processed, Ordering::SeqCst, Ordering::Relaxed)
                             .is_ok()
                         {
                             callback(processed, total, current_fetched, current_failed);
                         }
-                    }
                 }
             }));
         }

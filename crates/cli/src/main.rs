@@ -1435,7 +1435,7 @@ async fn cmd_pinata_queue_status() -> anyhow::Result<()> {
 }
 
 /// Upload files to Pinata with progress reporting.
-
+///
 /// Sync validated raw images to Pinata for a collection.
 ///
 /// This command:
@@ -1443,12 +1443,14 @@ async fn cmd_pinata_queue_status() -> anyhow::Result<()> {
 /// 2. Fetches collection metadata from CNFT.tools
 /// 3. Validates local raw files against on-chain CIDs
 /// 4. Uploads only valid files to Pinata
+///
 /// Sync validated raw images to Pinata for a collection.
 ///
 /// This command uses a streaming approach:
 /// 1. Loads config and fetches collection metadata
 /// 2. Fetches list of CIDs already in the Pinata group
 /// 3. For each asset: skip if already in Pinata, validate CID, upload if valid
+///
 /// Sync validated raw images to Pinata for a collection.
 ///
 /// This command efficiently determines which files need uploading:
@@ -1648,7 +1650,7 @@ async fn cmd_pinata_sync(
 
     for (_target_cid, (encoded_name, display_name, original_cid)) in &to_upload {
         pb.inc(1);
-        pb.set_message(format!("{}", display_name));
+        pb.set_message(display_name.to_string());
 
         // Try to find local file with various extensions
         let possible_paths: Vec<PathBuf> = ["png", "jpg", "jpeg", "webp", "gif"]
@@ -1830,13 +1832,11 @@ async fn cmd_pinata_clean(
     // Build set of valid CIDv1s from on-chain data
     let mut valid_cids: HashSet<String> = HashSet::new();
     for asset in &assets {
-        if let Some(ref image_url) = asset.image_url {
-            if let Some(cid) = extract_cid(image_url) {
-                if let Some(cid_v1) = to_cidv1(&cid) {
+        if let Some(ref image_url) = asset.image_url
+            && let Some(cid) = extract_cid(image_url)
+                && let Some(cid_v1) = to_cidv1(&cid) {
                     valid_cids.insert(cid_v1);
                 }
-            }
-        }
     }
     println!("  Valid CIDs: {}", valid_cids.len());
 
@@ -2213,13 +2213,11 @@ async fn cmd_filebase_unpinned(policy_id: &str, with_names: bool) -> anyhow::Res
         let assets = MaestroSource::from_env()?.fetch_collection(policy_id).await?;
         let mut map = HashMap::new();
         for a in &assets {
-            if let Some(url) = a.image_url.as_ref() {
-                if let Some(cid) = extract_cid(url) {
-                    if let Some(v1) = to_cidv1(&cid) {
+            if let Some(url) = a.image_url.as_ref()
+                && let Some(cid) = extract_cid(url)
+                    && let Some(v1) = to_cidv1(&cid) {
                         map.entry(v1).or_insert_with(|| a.display_name.clone());
                     }
-                }
-            }
         }
         println!("  Mapped {} CIDs to assets", map.len());
         map
@@ -2266,11 +2264,10 @@ async fn cmd_filebase_root_audit(sample: usize) -> anyhow::Result<()> {
         for (key, _size) in &entries {
             policy_object_count += 1;
             // The leaf may be an asset name (e.g. "0001") OR a CID (bafy/Qm).
-            if let Some(leaf) = key.rsplit('/').next() {
-                if let Some(v1) = to_cidv1(leaf) {
+            if let Some(leaf) = key.rsplit('/').next()
+                && let Some(v1) = to_cidv1(leaf) {
                     covered_v1.insert(v1);
                 }
-            }
         }
     }
     println!("  Total folder objects: {}", policy_object_count);
@@ -2461,11 +2458,10 @@ async fn cmd_filebase_root_cleanup(execute: bool, limit: Option<usize>) -> anyho
     for prefix in &policy_prefixes {
         let entries = s3.list_prefix(prefix).await?;
         for (key, _) in &entries {
-            if let Some(leaf) = key.rsplit('/').next() {
-                if let Some(v1) = to_cidv1(leaf) {
+            if let Some(leaf) = key.rsplit('/').next()
+                && let Some(v1) = to_cidv1(leaf) {
                     covered_v1.insert(v1);
                 }
-            }
         }
     }
     println!("  Unique CIDs covered: {}", covered_v1.len());
@@ -2493,12 +2489,11 @@ async fn cmd_filebase_root_cleanup(execute: bool, limit: Option<usize>) -> anyho
         println!("Non-CID root entries (kept — manual review):     {}", non_cid);
     }
 
-    if let Some(n) = limit {
-        if execute {
+    if let Some(n) = limit
+        && execute {
             eligible.truncate(n);
             println!("\nLimited to first {} deletion(s).", eligible.len());
         }
-    }
 
     if !execute {
         println!(
@@ -2519,11 +2514,10 @@ async fn cmd_filebase_root_cleanup(execute: bool, limit: Option<usize>) -> anyho
     for prefix in &policy_prefixes {
         let entries = s3.list_prefix(prefix).await?;
         for (key, _) in &entries {
-            if let Some(leaf) = key.rsplit('/').next() {
-                if let Some(v1) = to_cidv1(leaf) {
+            if let Some(leaf) = key.rsplit('/').next()
+                && let Some(v1) = to_cidv1(leaf) {
                     v1_to_folders.entry(v1).or_default().push(key.clone());
                 }
-            }
         }
     }
 
@@ -2783,12 +2777,11 @@ async fn cmd_filebase_root_relocate(
 
     let mut targets: Vec<String> = root_objects.iter().map(|(k, _)| k.clone()).collect();
     targets.sort();
-    if let Some(n) = limit {
-        if execute {
+    if let Some(n) = limit
+        && execute {
             targets.truncate(n);
             println!("  Limited to first {}", targets.len());
         }
-    }
 
     if !execute {
         println!("\nPreview (first 5):");
@@ -2899,11 +2892,10 @@ async fn cmd_filebase_delete_safety_test() -> anyhow::Result<()> {
     for prefix in &policy_prefixes {
         let entries = s3.list_prefix(prefix).await?;
         for (key, _) in &entries {
-            if let Some(leaf) = key.rsplit('/').next() {
-                if let Some(v1) = to_cidv1(leaf) {
+            if let Some(leaf) = key.rsplit('/').next()
+                && let Some(v1) = to_cidv1(leaf) {
                     v1_to_folder_key.entry(v1).or_insert_with(|| key.clone());
                 }
-            }
         }
     }
 
@@ -3279,15 +3271,13 @@ async fn cmd_filebase_rescue(
     let assets = MaestroSource::from_env()?.fetch_collection(policy_id).await?;
     let mut cid_to_asset: HashMap<String, String> = HashMap::new();
     for a in &assets {
-        if let Some(url) = a.image_url.as_ref() {
-            if let Some(cid) = extract_cid(url) {
-                if let Some(v1) = to_cidv1(&cid) {
+        if let Some(url) = a.image_url.as_ref()
+            && let Some(cid) = extract_cid(url)
+                && let Some(v1) = to_cidv1(&cid) {
                     cid_to_asset
                         .entry(v1)
                         .or_insert_with(|| a.encoded_name.clone());
                 }
-            }
-        }
     }
     println!("  Assets with resolvable CIDs: {}", cid_to_asset.len());
 
@@ -3392,11 +3382,10 @@ async fn cmd_filebase_rescue(
         // RPC-add rescue, delete it now. Safe — we just confirmed the
         // folder copy was written via S3 PUT. Best-effort; a missing root
         // (404) is the common case and intentionally ignored.
-        if put_ok {
-            if let Some(v0) = to_cidv0(cid) {
+        if put_ok
+            && let Some(v0) = to_cidv0(cid) {
                 let _ = s3.delete_object(&v0).await;
             }
-        }
     }
     pb.finish_and_clear();
 
@@ -3651,11 +3640,11 @@ async fn cmd_source_probe_maestro(policy_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_dump(path: &PathBuf, token_filter: Option<&str>) -> anyhow::Result<()> {
+fn cmd_dump(path: &std::path::Path, token_filter: Option<&str>) -> anyhow::Result<()> {
     use viewer_binary::{HEADER_SIZE, Header, TOKEN_FIXED_SIZE, TraitSchema};
 
     let bin_path = if path.is_file() {
-        path.clone()
+        path.to_path_buf()
     } else {
         path.join("collection.bin")
     };
@@ -3773,11 +3762,10 @@ fn cmd_dump(path: &PathBuf, token_filter: Option<&str>) -> anyhow::Result<()> {
             std::str::from_utf8(&data[asset_id_start..asset_id_end]).unwrap_or("<invalid>");
 
         // If filtering by token name, only show matching
-        if let Some(filter) = token_filter {
-            if name != filter && asset_id != filter {
+        if let Some(filter) = token_filter
+            && name != filter && asset_id != filter {
                 continue;
             }
-        }
         found_token = true;
 
         println!("--- Token {i}: {name} (asset_id: {asset_id}) ---");
@@ -3816,14 +3804,16 @@ fn cmd_dump(path: &PathBuf, token_filter: Option<&str>) -> anyhow::Result<()> {
         }
     }
 
-    if token_filter.is_some() && !found_token {
-        println!("Token '{}' not found", token_filter.unwrap());
+    if let Some(token_filter) = token_filter
+        && !found_token
+    {
+        println!("Token '{}' not found", token_filter);
     }
 
     Ok(())
 }
 
-fn cmd_info(path: &PathBuf) -> anyhow::Result<()> {
+fn cmd_info(path: &std::path::Path) -> anyhow::Result<()> {
     let index_path = path.join("index.json");
 
     if index_path.exists() {
@@ -3949,9 +3939,9 @@ async fn cmd_cid_check(policy_id: &str, local_dir: Option<PathBuf>) -> anyhow::R
     let mut assets_with_cids = Vec::new();
 
     for asset in &assets {
-        if let Some(ref image_url) = asset.image_url {
-            if let Some(cid) = extract_cid(image_url) {
-                if let Some(info) = parse_cid_info(&cid) {
+        if let Some(ref image_url) = asset.image_url
+            && let Some(cid) = extract_cid(image_url)
+                && let Some(info) = parse_cid_info(&cid) {
                     let key = (info.version, info.codec.clone());
                     *cid_stats.entry(key).or_insert(0usize) += 1;
                     assets_with_cids.push((
@@ -3961,8 +3951,6 @@ async fn cmd_cid_check(policy_id: &str, local_dir: Option<PathBuf>) -> anyhow::R
                         info,
                     ));
                 }
-            }
-        }
     }
 
     println!("CID Analysis:");

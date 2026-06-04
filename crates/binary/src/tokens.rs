@@ -18,14 +18,14 @@ pub const NAME_REF_OFFSET_MASK: u32 = 0x7FFF_FFFF;
 /// - rarity_rank: u16
 /// - rarity_score: u16 (fixed-point, score * 100)
 /// - name_ref: u32
-/// Total fixed: 8 bytes
+///   Total fixed: 8 bytes
 ///
 /// Layout (multi-source, FLAG_MULTI_SOURCE set):
 /// - source_index: u8 (added at start)
 /// - rarity_rank: u16
 /// - rarity_score: u16 (fixed-point, score * 100)
 /// - name_ref: u32
-/// Total fixed: 9 bytes
+///   Total fixed: 9 bytes
 ///
 /// Note: Sprite locations are stored in thumbnails.bin, not here.
 pub const TOKEN_FIXED_SIZE: usize = 8;
@@ -103,6 +103,7 @@ impl TokenEntry {
 }
 
 /// Write a bitmap to bytes based on size variant.
+#[allow(dead_code)]
 pub fn write_bitmap(bitmap: &[u8], buf: &mut [u8], size: BitmapSize) {
     let len = size.byte_size();
     buf[..len].copy_from_slice(&bitmap[..len]);

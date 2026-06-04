@@ -88,6 +88,7 @@ struct GroupsListResponse {
 #[derive(Debug, Deserialize)]
 struct GroupsData {
     groups: Vec<Group>,
+    #[allow(dead_code)]
     next_page_token: Option<String>,
 }
 
@@ -250,6 +251,7 @@ impl PinataClient {
     }
 
     /// Check response status and return appropriate error.
+    #[allow(dead_code)]
     fn check_response(response: &reqwest::Response) -> Option<PinataError> {
         if response.status().is_success() {
             None
@@ -700,6 +702,7 @@ impl PinataClient {
     ///
     /// # Returns
     /// Vector of results for each file (Ok with UploadedFile or Err with error message).
+    #[allow(clippy::type_complexity)]
     pub async fn upload_files(
         &self,
         files: &[(std::path::PathBuf, String)],
@@ -929,15 +932,13 @@ impl PinataClient {
                 }
             } else {
                 // Before pinning, check if queue is getting too long (every 10 pins)
-                if pinned > 0 && pinned % 10 == 0 {
-                    if let Ok(queue_full) = self.is_pin_queue_full().await {
-                        if queue_full {
+                if pinned > 0 && pinned % 10 == 0
+                    && let Ok(queue_full) = self.is_pin_queue_full().await
+                        && queue_full {
                             info!("Pin queue has >100 pending requests, pausing...");
                             eprintln!("\n  Pin queue has >100 pending requests, pausing...");
                             self.wait_for_queue_capacity().await?;
                         }
-                    }
-                }
 
                 // File not pinned yet, need to pin it
                 match self.pin_by_cid(cid, Some(name), Some(group_id)).await {
@@ -955,11 +956,10 @@ impl PinataClient {
             }
 
             // Report progress
-            if let Some(callback) = on_progress {
-                if (i + 1) % 50 == 0 || i + 1 == total {
+            if let Some(callback) = on_progress
+                && ((i + 1) % 50 == 0 || i + 1 == total) {
                     callback(i + 1, total);
                 }
-            }
 
             // Rate limit delay (skip on last item)
             if i + 1 < total {
@@ -1218,6 +1218,7 @@ impl PinataClient {
     ///
     /// Polls the pin queue until none of our CIDs are in a pending state.
     /// Returns the CIDs that failed to pin.
+    #[allow(clippy::type_complexity)]
     pub async fn wait_for_pins(
         &self,
         cids: &[String],
@@ -1258,12 +1259,11 @@ impl PinataClient {
 
             // Track failures
             for job in &our_jobs {
-                if failed_statuses.contains(&job.status.as_str()) {
-                    if !failed_cids.contains(&job.cid) {
+                if failed_statuses.contains(&job.status.as_str())
+                    && !failed_cids.contains(&job.cid) {
                         warn!("Pin failed for CID {}: {}", job.cid, job.status);
                         failed_cids.push(job.cid.clone());
                     }
-                }
             }
 
             let completed = total - pending.len() - failed_cids.len();

@@ -155,11 +155,10 @@ impl FilebaseClient {
             if line.is_empty() {
                 continue;
             }
-            if let Ok(entry) = serde_json::from_str::<RpcAddEntry>(line) {
-                if entry.name == path {
+            if let Ok(entry) = serde_json::from_str::<RpcAddEntry>(line)
+                && entry.name == path {
                     return Ok(entry.hash);
                 }
-            }
         }
         Err(FilebaseError::Rpc(format!(
             "no file entry for {path} in add response: {text}"
@@ -247,6 +246,7 @@ impl FilebaseClient {
     /// Pin a batch of items, pacing requests and reporting progress. Errors
     /// on individual pins are captured per-item rather than aborting the
     /// batch — the caller decides what to do with the summary.
+    #[allow(clippy::type_complexity)]
     pub async fn pin_cids(
         &self,
         items: &[PinItem],

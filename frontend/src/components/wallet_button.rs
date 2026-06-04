@@ -8,7 +8,7 @@ use wallet_leptos::{ConnectionState, WalletProviderEnum, try_use_wallet};
 #[component]
 pub fn WalletButton() -> impl IntoView {
     let Some(wallet) = try_use_wallet() else {
-        return view! {}.into_any();
+        return ().into_any();
     };
 
     let (show_dropdown, set_show_dropdown) = signal(false);

@@ -302,7 +302,7 @@ pub fn GalleryPage() -> impl IntoView {
                 </div>
             }>
                 {move || Suspend::new({
-                    let collection_resource = collection_resource.clone();
+                    let collection_resource = collection_resource;
                     async move {
                         match collection_resource.await {
                             Ok(collection) => {
@@ -352,15 +352,14 @@ pub fn GalleryPage() -> impl IntoView {
                                     }
                                     let mut css = String::new();
                                     for (trait_name, value) in &filters {
-                                        if let Some(ti) = traits_for_filter.iter().find(|t| &t.name == trait_name) {
-                                            if let Some(vi) = ti.values.iter().find(|v| &v.value == value) {
+                                        if let Some(ti) = traits_for_filter.iter().find(|t| &t.name == trait_name)
+                                            && let Some(vi) = ti.values.iter().find(|v| &v.value == value) {
                                                 use std::fmt::Write;
                                                 let _ = writeln!(css,
                                                     ".static-grid .nft-card:not(.b{}) {{ display: none; }}",
                                                     vi.bit_index
                                                 );
                                             }
-                                        }
                                     }
                                     css
                                 });

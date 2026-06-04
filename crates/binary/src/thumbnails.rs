@@ -76,7 +76,7 @@ impl SpriteIndexHeader {
         if buf.len() < SPRITE_INDEX_HEADER_SIZE {
             return None;
         }
-        if &buf[0..4] != &SPRITE_INDEX_MAGIC {
+        if buf[0..4] != SPRITE_INDEX_MAGIC {
             return None;
         }
         Some(Self {

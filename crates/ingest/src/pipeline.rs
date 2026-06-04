@@ -159,14 +159,12 @@ impl PipelineState {
 
     /// Load state from file, or create new if not exists.
     pub fn load_or_create(path: &Path, policy_id: &str, total_assets: usize) -> Self {
-        if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Ok(state) = serde_json::from_str::<Self>(&content) {
+        if path.exists()
+            && let Ok(content) = std::fs::read_to_string(path)
+                && let Ok(state) = serde_json::from_str::<Self>(&content) {
                     debug!(policy_id = %state.policy_id, "Resuming from saved state");
                     return state;
                 }
-            }
-        }
         Self::new(policy_id, total_assets)
     }
 
