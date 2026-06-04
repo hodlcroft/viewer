@@ -43,7 +43,7 @@ pub fn compute_cid_bytes(data: &[u8]) -> ComputedCid {
     if data.len() <= DEFAULT_CHUNK_SIZE {
         let node_bytes = create_unixfs_file_node(data, &[]);
         let digest = Code::Sha2_256.digest(&node_bytes);
-        let cid_v1 = Cid::new_v1(DAG_PB_CODEC, digest.clone());
+        let cid_v1 = Cid::new_v1(DAG_PB_CODEC, digest);
         let cid_v0 = Cid::new_v0(digest).ok();
 
         return ComputedCid {
@@ -309,13 +309,11 @@ pub fn find_matching_cid(data: &[u8], target_cid: &str) -> Option<ComputedCid> {
     }
 
     // Check v0 match
-    if target.version() == cid::Version::V0 {
-        if let Some(ref v0) = computed.cid_v0 {
-            if v0 == target_cid {
+    if target.version() == cid::Version::V0
+        && let Some(ref v0) = computed.cid_v0
+            && v0 == target_cid {
                 return Some(computed);
             }
-        }
-    }
 
     None
 }
@@ -415,9 +413,9 @@ mod tests {
             .parse()
             .unwrap();
 
-        let links = vec![
+        let links = [
             LinkInfo {
-                cid: leaf_cid.clone(),
+                cid: leaf_cid,
                 total_size: 262158, // protobuf size of leaf
                 file_size: 262144,  // actual data size
             },

@@ -1,0 +1,11 @@
+# Derp Birds (legacy collection)
+# Policy ID: b92f6473f18d4b78733d022fd89f3cacc1484fab6eddfd3c5d4b9494
+
+slug = "derpbirds_legacy"
+name = "Derp Birds (Legacy)"
+
+[traits]
+ignore = []
+
+[rarity]
+exclude = []

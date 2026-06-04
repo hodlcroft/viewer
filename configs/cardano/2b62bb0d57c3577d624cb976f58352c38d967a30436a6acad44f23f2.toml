@@ -1,0 +1,11 @@
+# Derp Eggs
+# Policy ID: 2b62bb0d57c3577d624cb976f58352c38d967a30436a6acad44f23f2
+
+slug = "derp-eggs"
+name = "Derp Eggs"
+
+[traits]
+ignore = []
+
+[rarity]
+exclude = []

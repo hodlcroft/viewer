@@ -207,8 +207,8 @@ impl SpriteGenerator {
 
     /// Finalize current sheet and save to disk.
     fn finalize_sheet(&mut self, output_dir: &Path) -> Result<(), SpriteError> {
-        if let Some(sheet) = self.current_sheet.take() {
-            if self.current_count > 0 {
+        if let Some(sheet) = self.current_sheet.take()
+            && self.current_count > 0 {
                 let path = output_dir.join(format!("{:04}.webp", self.current_index));
 
                 // Save as lossy WebP
@@ -239,7 +239,6 @@ impl SpriteGenerator {
 
                 self.current_index += 1;
             }
-        }
         Ok(())
     }
 

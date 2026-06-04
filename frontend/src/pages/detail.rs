@@ -126,7 +126,7 @@ pub fn DetailPage() -> impl IntoView {
             </div>
         }>
             {move || Suspend::new({
-                    let collection_resource = collection_resource.clone();
+                    let collection_resource = collection_resource;
                     async move {
                         match collection_resource.await {
                             Ok(collection) => {
@@ -143,13 +143,11 @@ pub fn DetailPage() -> impl IntoView {
                                         let total = collection.tokens.len();
 
                                         // Default to MagicEden algorithm when no source rarity is available
-                                        if !collection.has_source_rarity {
-                                            if let Some(rarity_algo) = use_context::<RwSignal<RarityAlgorithm>>() {
-                                                if rarity_algo.get() == RarityAlgorithm::Source {
+                                        if !collection.has_source_rarity
+                                            && let Some(rarity_algo) = use_context::<RwSignal<RarityAlgorithm>>()
+                                                && rarity_algo.get() == RarityAlgorithm::Source {
                                                     rarity_algo.set(RarityAlgorithm::MagicEden);
                                                 }
-                                            }
-                                        }
 
                                         view! {
                                             <TokenDetail
@@ -247,8 +245,8 @@ fn decode_token_traits(
             let byte_idx = value_info.bit_index as usize / 8;
             let bit_idx = value_info.bit_index as usize % 8;
 
-            if byte_idx < token.trait_bitmap.len() {
-                if token.trait_bitmap[byte_idx] & (1 << bit_idx) != 0 {
+            if byte_idx < token.trait_bitmap.len()
+                && token.trait_bitmap[byte_idx] & (1 << bit_idx) != 0 {
                     // Token has this trait value
                     let percentage = if total_tokens > 0 {
                         (value_info.count as f64 / total_tokens as f64) * 100.0
@@ -261,7 +259,6 @@ fn decode_token_traits(
                         percentage,
                     });
                 }
-            }
         }
     }
 
@@ -320,7 +317,7 @@ fn TokenDetail(
     // Fetch full image from HCF if available
     if let (Some(hcf_info), Some(location)) = (hcf.clone(), token.hcf_location.clone()) {
         let slug_for_fetch = slug.clone();
-        let img_ref_clone = img_ref.clone();
+        let img_ref_clone = img_ref;
         let tracker = loading_tracker.clone();
 
         // Cancel any previous request and get new abort signal

@@ -16,6 +16,7 @@ viewer-bundle = { workspace = true }
 viewer-binary = { workspace = true }
 viewer-ingest = { workspace = true }
 cnft_tools = { workspace = true }
+cardano-assets = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

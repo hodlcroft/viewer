@@ -300,7 +300,7 @@ mod tests {
             HcfBundler::bundle_batch(config, &image_paths, &output_dir, |_, _| {}).unwrap();
 
         assert_eq!(result.locations.len(), 5);
-        assert!(result.shards.len() >= 1);
+        assert!(!result.shards.is_empty());
 
         // Verify first location
         assert_eq!(result.locations[0].global_offset, 0);
@@ -308,8 +308,15 @@ mod tests {
         assert_eq!(result.locations[0].shard_offset, 0);
         assert_eq!(result.locations[0].length, 1000);
 
-        // Verify total size
-        let expected_total: u64 = (0..5).map(|i| 1000 + i * 100).sum::<usize>() as u64;
-        assert_eq!(result.total_size, expected_total);
+        // Verify total size. `total_size` is the padded global address space:
+        // each non-final shard is padded up to `shard_size` so that
+        // global_offset = shard_index * shard_size + offset_in_shard (relied on
+        // by HcfIndexSize::for_sizes, HcfLocation::locate, and the frontend
+        // reader). It therefore equals the sum of the shard sizes, which is
+        // larger than the raw image bytes by the inter-shard padding.
+        let raw_content: u64 = (0..5).map(|i| 1000 + i * 100).sum::<usize>() as u64;
+        let shard_total: u64 = result.shards.iter().map(|s| s.size).sum();
+        assert_eq!(result.total_size, shard_total);
+        assert!(result.total_size >= raw_content);
     }
 }

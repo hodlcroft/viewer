@@ -42,11 +42,10 @@ fn get_build_hash() -> String {
 
     if let Some(href) = href {
         // Extract hash from "/viewer-frontend-1c27406143753b04_bg.wasm"
-        if let (Some(start), Some(end)) = (href.rfind('-'), href.find("_bg.wasm")) {
-            if start < end {
+        if let (Some(start), Some(end)) = (href.rfind('-'), href.find("_bg.wasm"))
+            && start < end {
                 return href[start + 1..end].to_string();
             }
-        }
     }
     env!("CARGO_PKG_VERSION").to_string()
 }
@@ -291,6 +290,7 @@ impl Theme {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "brutalist" => Theme::Brutalist,
@@ -850,7 +850,7 @@ pub async fn fetch_hcf_image_with_signal(
         expected_len = location.length,
         first_bytes = format!(
             "{:02x}{:02x}{:02x}{:02x}",
-            bytes.get(0).copied().unwrap_or(0),
+            bytes.first().copied().unwrap_or(0),
             bytes.get(1).copied().unwrap_or(0),
             bytes.get(2).copied().unwrap_or(0),
             bytes.get(3).copied().unwrap_or(0),
@@ -907,11 +907,10 @@ fn save_theme(theme: Theme) {
 
 /// Apply data-theme attribute to the document root element
 fn apply_theme(theme: Theme) {
-    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-        if let Some(el) = doc.document_element() {
+    if let Some(doc) = web_sys::window().and_then(|w| w.document())
+        && let Some(el) = doc.document_element() {
             let _ = el.set_attribute("data-theme", theme.as_str());
         }
-    }
 }
 
 /// Main application component

@@ -9,6 +9,9 @@ Cargo.lock
 *.swp
 *.swo
 
+# Claude Code — local per-user overrides (track settings.json, not settings.local.json)
+.claude/settings.local.json
+
 # OS
 .DS_Store
 Thumbs.db

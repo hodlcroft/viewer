@@ -1,0 +1,11 @@
+# Derp Birds
+# Policy ID: e74862a09d17a9cb03174a6bd5fa305b8684475c4c36021591c606e0
+
+slug = "derpbirds"
+name = "Derp Birds"
+
+[traits]
+ignore = []
+
+[rarity]
+exclude = []
