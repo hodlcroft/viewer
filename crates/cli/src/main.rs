@@ -313,6 +313,27 @@ enum FilebaseAction {
         execute: bool,
     },
 
+    /// Delete `failed` Pinning Service pin records for a collection
+    /// when the CID has a folder copy in the bucket (i.e. content is
+    /// preserved elsewhere). Cleans stale records left when Pinning
+    /// Service didn't reconcile after the rescue. Previews by default.
+    PruneFailed {
+        /// Policy ID of the collection
+        policy_id: String,
+
+        /// Actually delete; without this, only previews.
+        #[arg(long)]
+        execute: bool,
+
+        /// Delete at most N pin records (applies only with --execute)
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Inter-request delay (ms) for the delete pass. Default 50ms.
+        #[arg(long)]
+        delay_ms: Option<u64>,
+    },
+
     /// Remove legacy CIDv0 pins for a collection, but only where a
     /// CIDv1 pin of the same content is already `pinned`. Previews by
     /// default — pass --execute to actually delete.
@@ -494,6 +515,12 @@ async fn main() -> anyhow::Result<()> {
                 limit,
                 execute,
             } => cmd_filebase_rescue(&policy_id, limit, execute).await,
+            FilebaseAction::PruneFailed {
+                policy_id,
+                execute,
+                limit,
+                delay_ms,
+            } => cmd_filebase_prune_failed(&policy_id, execute, limit, delay_ms).await,
             FilebaseAction::PruneV0 {
                 policy_id,
                 execute,
@@ -2288,6 +2315,126 @@ async fn cmd_filebase_root_audit(sample: usize) -> anyhow::Result<()> {
     print_sample("Covered root entries", &covered_root, sample);
     print_sample("Orphan root entries", &orphan_root, sample);
     print_sample("Non-CID root entries", &non_cid_root, sample);
+
+    Ok(())
+}
+
+/// Delete `failed` Pinning Service pin records for a policy when the
+/// CID's content has a folder copy in the bucket — content is preserved
+/// via the folder bucket entry, so the stale failed pin record can go.
+async fn cmd_filebase_prune_failed(
+    policy_id: &str,
+    execute: bool,
+    limit: Option<usize>,
+    delay_ms: Option<u64>,
+) -> anyhow::Result<()> {
+    use std::collections::HashSet;
+    use std::time::Duration;
+    use viewer_ingest::{FilebaseClient, FilebaseS3Client, to_cidv1};
+
+    println!("Filebase prune-failed for: {}", policy_id);
+
+    let mut client = FilebaseClient::from_env()?;
+    if let Some(ms) = delay_ms {
+        client = client.with_delay(Duration::from_millis(ms));
+    }
+    let s3 = FilebaseS3Client::from_env()?;
+
+    // 1. Failed pin records for this policy.
+    let pins = client.list_all_pins(policy_id).await?;
+    let failed: Vec<&viewer_ingest::PinRecord> =
+        pins.iter().filter(|p| p.status == "failed").collect();
+    println!("  Failed pin records: {}", failed.len());
+    if failed.is_empty() {
+        println!("Nothing to prune.");
+        return Ok(());
+    }
+
+    // 2. Build covered-v1 set from this policy's folder.
+    let folder_prefix = format!("{policy_id}/");
+    println!("Listing {folder_prefix} for covered CIDs...");
+    let entries = s3.list_prefix(&folder_prefix).await?;
+    let prefix_len = folder_prefix.len();
+    let covered_v1: HashSet<String> = entries
+        .iter()
+        .filter_map(|(key, _)| {
+            let leaf = key.get(prefix_len..)?;
+            to_cidv1(leaf)
+        })
+        .collect();
+    println!("  Covered v1 CIDs in folder: {}", covered_v1.len());
+
+    // 3. Classify each failed pin record.
+    let mut eligible: Vec<String> = Vec::new();
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    for pin in &failed {
+        let Some(v1) = to_cidv1(&pin.cid) else {
+            skipped.push((pin.cid.clone(), "unparseable CID".to_string()));
+            continue;
+        };
+        if covered_v1.contains(&v1) {
+            eligible.push(pin.requestid.clone());
+        } else {
+            skipped.push((pin.cid.clone(), "no folder copy".to_string()));
+        }
+    }
+
+    println!(
+        "\n  Eligible for deletion (folder copy exists): {}",
+        eligible.len()
+    );
+    println!("  Skipped (no folder copy):                   {}", skipped.len());
+    if !skipped.is_empty() && !execute {
+        println!("\nFirst 5 skipped:");
+        for (cid, reason) in skipped.iter().take(5) {
+            println!("  {} — {}", cid, reason);
+        }
+    }
+
+    if !execute {
+        println!(
+            "\nPREVIEW — re-run with --execute to delete {} stale pin record(s).",
+            eligible.len()
+        );
+        return Ok(());
+    }
+
+    if let Some(n) = limit {
+        eligible.truncate(n);
+        println!("\nLimited to first {}", eligible.len());
+    }
+    if eligible.is_empty() {
+        println!("\nNothing safe to delete.");
+        return Ok(());
+    }
+
+    use indicatif::{ProgressBar, ProgressStyle};
+    let pb = ProgressBar::new(eligible.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let results = client
+        .delete_pins(&eligible, Some(&|done, _total| pb.set_position(done as u64)))
+        .await;
+    pb.finish_and_clear();
+
+    let succeeded = results.iter().filter(|r| r.is_ok()).count();
+    let failed_count = results.len() - succeeded;
+
+    println!("\nPrune-failed complete:");
+    println!("  Deleted: {}", succeeded);
+    if failed_count > 0 {
+        println!("  Failed:  {}", failed_count);
+        for (i, r) in results.iter().enumerate().take(10) {
+            if let Err(e) = r {
+                println!("    {} — {}", &eligible[i], e);
+            }
+        }
+    }
 
     Ok(())
 }
