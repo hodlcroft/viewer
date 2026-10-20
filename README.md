@@ -402,28 +402,26 @@ struct LoadingTracker {
 
 ## Worker API
 
-The Cloudflare Worker serves assets from R2 with optional access token protection.
-
-### Endpoints
+The worker serves the frontend SPA and, for `/api/*`, the proof registry.
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Health check |
-| `GET /:slug/collection.bin` | Binary collection data |
-| `GET /:slug/sprites/:sheet.webp` | Sprite sheet image |
-| `GET /:slug/hcf/images_:shard.hcf` | HCF shard (supports range requests) |
+| `GET /api/health` | Health check |
+| `GET /api/debug/:slug` | Parsed `collection.bin` header and first tokens |
+| `POST /api/proofs` | Record a published proof (bearer `VIEWER_PUBLISH_TOKEN`) |
+| `GET /api/proofs/:slug` | The recorded proof: seed, count, config hash, visibility |
 
-### Access Tokens
+Collection data does not pass through the worker: the SPA fetches `collection.bin`,
+sprite sheets and HCF shards directly from
+`files.hodlcroft.com/{collections,preview}/<slug>/`. A preview's random slug suffix is
+its access control; nothing lists previews.
 
-For private preview collections, requests require a token:
+`POST /api/proofs` needs the D1 binding (`DB`) and the publish secret:
 
-```
-GET /my-collection/collection.bin?token=abc123
-```
-
-Or via header:
-```
-Authorization: Bearer abc123
+```sh
+wrangler d1 create viewer-registry          # paste the printed id into wrangler.toml
+wrangler d1 migrations apply viewer-registry --remote
+wrangler secret put VIEWER_PUBLISH_TOKEN
 ```
 
 ## Development

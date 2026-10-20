@@ -16,7 +16,7 @@ leptos = { workspace = true, features = ["csr"] }
 leptos_meta.workspace = true
 leptos_router.workspace = true
 
-# UI utilities from shared-ui
+# UI utilities from shared-crates
 ui-core.workspace = true
 
 # Web APIs

@@ -9,6 +9,7 @@
 //! - Pack everything into the binary format
 
 pub mod analyze;
+pub mod asset_list;
 pub mod bundle;
 pub mod cid_compute;
 pub mod cid_index;
@@ -26,6 +27,7 @@ pub mod sprites;
 pub mod writer;
 
 pub use analyze::TraitAnalysis;
+pub use asset_list::{AssetListClient, AssetListError, AssetListing, ListedAsset};
 pub use bundle::{HcfBundleResult, HcfBundler, HcfConfig, HcfError, ImageLocation, ShardInfo};
 pub use cid_compute::{
     CidInfo, ComputedCid, compute_cid, compute_cid_bytes, find_matching_cid, parse_cid_info,

@@ -113,8 +113,8 @@ enum PinataAction {
 enum PinSource {
     /// `ownership.cnft.dev/api/cids/{policy}` — pre-resolved.
     CidIndex,
-    /// Live extraction via Maestro + local `cardano-assets`.
-    Maestro,
+    /// Image CIDs from `assets-resolve.hodlcroft.com/list`.
+    AssetsResolve,
 }
 
 #[derive(Subcommand)]
@@ -154,9 +154,9 @@ enum FilebaseAction {
         delay_ms: Option<u64>,
 
         /// Where to source the CID set. Default `cid-index` uses
-        /// `ownership.cnft.dev`; `maestro` extracts live via Maestro +
-        /// the local `cardano-assets` patch (use when a policy isn't yet
-        /// indexed by the collection-ownership worker).
+        /// `ownership.cnft.dev`; `assets-resolve` extracts the image CIDs
+        /// from the collection listing (use when a policy isn't yet indexed
+        /// by the collection-ownership worker).
         #[arg(long, value_enum, default_value_t = PinSource::CidIndex)]
         source: PinSource,
     },
@@ -297,26 +297,31 @@ enum FilebaseAction {
     },
 
     /// Recover a collection's failed-pin content from nftcdn. Probes by
-    /// default — fetches each failed asset's image and checks the bytes
+    /// default — fetches each target's image and checks the bytes
     /// reproduce its on-chain CID. With --execute, also re-hosts the
     /// verified content to Filebase via the IPFS RPC API.
     Rescue {
         /// Policy ID of the collection
         policy_id: String,
 
-        /// Process at most N failed CIDs
+        /// Process at most N target CIDs
         #[arg(long)]
         limit: Option<usize>,
 
         /// Re-host verified content to Filebase; without this, probe only.
         #[arg(long)]
         execute: bool,
+
+        /// Also treat queued/pinning pins as stalled and rescue them.
+        /// Without this, only CIDs whose every pin is `failed` are targeted.
+        #[arg(long)]
+        include_pinning: bool,
     },
 
-    /// Delete `failed` Pinning Service pin records for a collection
-    /// when the CID has a folder copy in the bucket (i.e. content is
-    /// preserved elsewhere). Cleans stale records left when Pinning
-    /// Service didn't reconcile after the rescue. Previews by default.
+    /// Delete stale Pinning Service pin records for a collection when the
+    /// CID has a folder copy in the bucket (i.e. content is preserved
+    /// elsewhere). Cleans stale records left when Pinning Service didn't
+    /// reconcile after the rescue. Previews by default.
     PruneFailed {
         /// Policy ID of the collection
         policy_id: String,
@@ -332,6 +337,11 @@ enum FilebaseAction {
         /// Inter-request delay (ms) for the delete pass. Default 50ms.
         #[arg(long)]
         delay_ms: Option<u64>,
+
+        /// Also prune `queued`/`pinning` records, not just `failed` ones.
+        /// Only records whose CID already has a folder copy are touched.
+        #[arg(long)]
+        include_pinning: bool,
     },
 
     /// Remove legacy CIDv0 pins for a collection, but only where a
@@ -514,13 +524,18 @@ async fn main() -> anyhow::Result<()> {
                 policy_id,
                 limit,
                 execute,
-            } => cmd_filebase_rescue(&policy_id, limit, execute).await,
+                include_pinning,
+            } => cmd_filebase_rescue(&policy_id, limit, execute, include_pinning).await,
             FilebaseAction::PruneFailed {
                 policy_id,
                 execute,
                 limit,
                 delay_ms,
-            } => cmd_filebase_prune_failed(&policy_id, execute, limit, delay_ms).await,
+                include_pinning,
+            } => {
+                cmd_filebase_prune_failed(&policy_id, execute, limit, delay_ms, include_pinning)
+                    .await
+            }
             FilebaseAction::PruneV0 {
                 policy_id,
                 execute,
@@ -1943,7 +1958,8 @@ async fn cmd_filebase_pin(
     use std::collections::BTreeMap;
     use std::time::Duration;
     use viewer_ingest::{
-        CidIndexClient, CidIndexStatus, FilebaseClient, MaestroClient, PinItem,
+        AssetListClient, CidIndexClient, CidIndexStatus, FilebaseClient, PinItem, extract_cid,
+        to_cidv1,
     };
 
     tracing_subscriber::fmt()
@@ -1969,11 +1985,26 @@ async fn cmd_filebase_pin(
             }
             index.cids
         }
-        PinSource::Maestro => {
-            println!("Extracting CIDs from Maestro (local cardano-assets)...");
-            MaestroClient::from_env()?
-                .fetch_policy_cids(policy_id)
-                .await?
+        PinSource::AssetsResolve => {
+            println!("Extracting image CIDs from assets-resolve...");
+            let listing = AssetListClient::new().fetch_all(policy_id).await?;
+            println!(
+                "  Assets in listing: {} (as of chunk {})",
+                listing.assets.len(),
+                listing.as_of_chunk
+            );
+            let mut seen = std::collections::HashSet::new();
+            let mut cids = Vec::new();
+            for asset in &listing.assets {
+                if let Some(cid) = extract_cid(&asset.image)
+                    && let Some(v1) = to_cidv1(&cid)
+                    && seen.insert(v1.clone())
+                {
+                    cids.push(v1);
+                }
+            }
+            cids.sort();
+            cids
         }
     };
     println!("  CIDs to pin: {}", cids.len());
@@ -2144,9 +2175,7 @@ async fn cmd_filebase_failed_by_policy() -> anyhow::Result<()> {
 /// still-resolving content just needs more time.
 async fn cmd_filebase_unpinned(policy_id: &str, with_names: bool) -> anyhow::Result<()> {
     use std::collections::HashMap;
-    use viewer_ingest::{
-        AssetSource, FilebaseClient, MaestroSource, extract_cid, to_cidv1,
-    };
+    use viewer_ingest::{AssetListClient, FilebaseClient, extract_cid, to_cidv1};
 
     println!("Filebase unpinned for: {}", policy_id);
 
@@ -2154,6 +2183,11 @@ async fn cmd_filebase_unpinned(policy_id: &str, with_names: bool) -> anyhow::Res
     println!("Listing all pins...");
     let pins = client.list_all_pins(policy_id).await?;
     println!("  Total pins: {}", pins.len());
+
+    if pins.is_empty() {
+        println!("\nNo pins found for this collection — nothing is pinned.");
+        return Ok(());
+    }
 
     // Group pins by canonical v1 CID — collapses v0/v1 of the same block.
     let mut groups: HashMap<String, Vec<String>> = HashMap::new();
@@ -2206,18 +2240,18 @@ async fn cmd_filebase_unpinned(policy_id: &str, with_names: bool) -> anyhow::Res
         return Ok(());
     }
 
-    // Optionally resolve each CID back to its asset via Maestro for a
+    // Optionally resolve each CID back to its asset via assets-resolve for a
     // human-readable report.
     let names: HashMap<String, String> = if with_names {
-        println!("\nResolving asset names via Maestro...");
-        let assets = MaestroSource::from_env()?.fetch_collection(policy_id).await?;
+        println!("\nResolving asset names via assets-resolve...");
+        let listing = AssetListClient::new().fetch_all(policy_id).await?;
         let mut map = HashMap::new();
-        for a in &assets {
-            if let Some(url) = a.image_url.as_ref()
-                && let Some(cid) = extract_cid(url)
-                    && let Some(v1) = to_cidv1(&cid) {
-                        map.entry(v1).or_insert_with(|| a.display_name.clone());
-                    }
+        for a in &listing.assets {
+            if let Some(cid) = extract_cid(&a.image)
+                && let Some(v1) = to_cidv1(&cid)
+            {
+                map.entry(v1).or_insert_with(|| a.name.clone());
+            }
         }
         println!("  Mapped {} CIDs to assets", map.len());
         map
@@ -2316,14 +2350,17 @@ async fn cmd_filebase_root_audit(sample: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Delete `failed` Pinning Service pin records for a policy when the
+/// Delete stale Pinning Service pin records for a policy when the
 /// CID's content has a folder copy in the bucket — content is preserved
-/// via the folder bucket entry, so the stale failed pin record can go.
+/// via the folder bucket entry, so the stale record can go. `failed`
+/// records are always considered; `include_pinning` adds `queued` and
+/// `pinning` records too.
 async fn cmd_filebase_prune_failed(
     policy_id: &str,
     execute: bool,
     limit: Option<usize>,
     delay_ms: Option<u64>,
+    include_pinning: bool,
 ) -> anyhow::Result<()> {
     use std::collections::HashSet;
     use std::time::Duration;
@@ -2337,12 +2374,17 @@ async fn cmd_filebase_prune_failed(
     }
     let s3 = FilebaseS3Client::from_env()?;
 
-    // 1. Failed pin records for this policy.
+    // 1. Stale pin records for this policy.
     let pins = client.list_all_pins(policy_id).await?;
-    let failed: Vec<&viewer_ingest::PinRecord> =
-        pins.iter().filter(|p| p.status == "failed").collect();
-    println!("  Failed pin records: {}", failed.len());
-    if failed.is_empty() {
+    let stale: Vec<&viewer_ingest::PinRecord> = pins
+        .iter()
+        .filter(|p| {
+            p.status == "failed"
+                || (include_pinning && (p.status == "queued" || p.status == "pinning"))
+        })
+        .collect();
+    println!("  Stale pin records: {}", stale.len());
+    if stale.is_empty() {
         println!("Nothing to prune.");
         return Ok(());
     }
@@ -2361,10 +2403,10 @@ async fn cmd_filebase_prune_failed(
         .collect();
     println!("  Covered v1 CIDs in folder: {}", covered_v1.len());
 
-    // 3. Classify each failed pin record.
+    // 3. Classify each stale pin record.
     let mut eligible: Vec<String> = Vec::new();
     let mut skipped: Vec<(String, String)> = Vec::new();
-    for pin in &failed {
+    for pin in &stale {
         let Some(v1) = to_cidv1(&pin.cid) else {
             skipped.push((pin.cid.clone(), "unparseable CID".to_string()));
             continue;
@@ -2584,7 +2626,7 @@ async fn cmd_filebase_classify_uncategorized(
     limit: Option<usize>,
 ) -> anyhow::Result<()> {
     use std::collections::HashMap;
-    use viewer_ingest::{FilebaseS3Client, MaestroClient, to_cidv1};
+    use viewer_ingest::{CidIndexClient, CidIndexStatus, FilebaseS3Client, to_cidv1};
 
     fn is_policy_id(s: &str) -> bool {
         s.len() == 56 && s.chars().all(|c| c.is_ascii_hexdigit())
@@ -2609,10 +2651,11 @@ async fn cmd_filebase_classify_uncategorized(
     policies.sort();
     println!("  Found {} policy folder(s)", policies.len());
 
-    println!("\nIndexing each policy's CIDs via Maestro...");
-    let maestro = MaestroClient::from_env()?;
+    println!("\nIndexing each policy's CIDs via ownership.cnft.dev...");
+    let cid_index = CidIndexClient::new();
     let mut cid_to_policy: HashMap<String, String> = HashMap::new();
     let mut indexed = 0usize;
+    let mut incomplete_index: Vec<String> = Vec::new();
     let mut failed_index: Vec<(String, String)> = Vec::new();
 
     use indicatif::{ProgressBar, ProgressStyle};
@@ -2625,10 +2668,13 @@ async fn cmd_filebase_classify_uncategorized(
     );
     for policy in &policies {
         pb.set_message(policy.clone());
-        match maestro.fetch_policy_cids(policy).await {
-            Ok(cids) => {
+        match cid_index.fetch_all(policy).await {
+            Ok(index) => {
+                if index.status != CidIndexStatus::Complete {
+                    incomplete_index.push(policy.clone());
+                }
                 indexed += 1;
-                for cid in cids {
+                for cid in index.cids {
                     cid_to_policy.entry(cid).or_insert_with(|| policy.clone());
                 }
             }
@@ -2642,6 +2688,12 @@ async fn cmd_filebase_classify_uncategorized(
         policies.len(),
         cid_to_policy.len()
     );
+    if !incomplete_index.is_empty() {
+        println!(
+            "  {} policies not fully resolved (CID sets may be incomplete)",
+            incomplete_index.len()
+        );
+    }
     if !failed_index.is_empty() {
         println!("  Failed to index {} policies:", failed_index.len());
         for (p, e) in failed_index.iter().take(5) {
@@ -3214,21 +3266,24 @@ async fn cmd_filebase_rescue_cleanup(policy_id: &str, execute: bool) -> anyhow::
     Ok(())
 }
 
-/// Recover a collection's failed-pin content from nftcdn. For each failed
+/// Recover a collection's failed-pin content from nftcdn. For each target
 /// CID: map to its asset, fetch the image from nftcdn, and check whether
 /// the bytes reproduce the on-chain CID via `find_matching_cid`. With
 /// `execute`, verified content is re-hosted to Filebase via the IPFS RPC
 /// `add` endpoint and the returned CID is confirmed against the original.
+/// `include_pinning` widens the target set to CIDs with no `pinned` copy,
+/// including queued/pinning records Filebase has not resolved.
 async fn cmd_filebase_rescue(
     policy_id: &str,
     limit: Option<usize>,
     execute: bool,
+    include_pinning: bool,
 ) -> anyhow::Result<()> {
     use cardano_assets::AssetId;
     use std::collections::HashMap;
     use viewer_ingest::{
-        AssetSource, FilebaseClient, FilebaseS3Client, MaestroSource, NftcdnClient,
-        compute_cid_bytes, extract_cid, find_matching_cid, to_cidv0, to_cidv1,
+        AssetListClient, FilebaseClient, FilebaseS3Client, NftcdnClient, compute_cid_bytes,
+        extract_cid, find_matching_cid, to_cidv0, to_cidv1,
     };
 
     println!(
@@ -3243,47 +3298,75 @@ async fn cmd_filebase_rescue(
         None
     };
 
-    // 1. Failed content set from Filebase (every pin for it `failed`).
+    // 1. Target content set from Filebase. By default that is every CID
+    // whose pins all `failed`; `include_pinning` also takes queued/pinning
+    // records with no `pinned` copy.
     let client = FilebaseClient::from_env()?;
     println!("Listing pins...");
     let pins = client.list_all_pins(policy_id).await?;
+
+    if pins.is_empty() {
+        println!(
+            "No pins found for this collection — nothing has been pinned, so there is nothing to rescue."
+        );
+        return Ok(());
+    }
+
     let mut groups: HashMap<String, Vec<String>> = HashMap::new();
     for pin in &pins {
         if let Some(v1) = to_cidv1(&pin.cid) {
             groups.entry(v1).or_default().push(pin.status.clone());
         }
     }
-    let mut failed: Vec<String> = groups
+    let mut candidates: Vec<String> = groups
         .into_iter()
-        .filter(|(_, s)| !s.is_empty() && s.iter().all(|x| x == "failed"))
+        .filter(|(_, statuses)| {
+            !statuses.is_empty()
+                && if include_pinning {
+                    !statuses.iter().any(|s| s == "pinned")
+                } else {
+                    statuses.iter().all(|s| s == "failed")
+                }
+        })
         .map(|(cid, _)| cid)
         .collect();
-    failed.sort();
-    println!("  Failed content: {}", failed.len());
+    candidates.sort();
+    println!(
+        "  Rescue targets: {} ({})",
+        candidates.len(),
+        if include_pinning {
+            "no pinned copy"
+        } else {
+            "all pins failed"
+        }
+    );
 
-    if failed.is_empty() {
+    if candidates.is_empty() {
         println!("Nothing to rescue.");
         return Ok(());
     }
 
-    // 2. Maestro asset list → v1 CID -> hex asset name.
-    println!("Fetching asset list from Maestro...");
-    let assets = MaestroSource::from_env()?.fetch_collection(policy_id).await?;
+    // 2. assets-resolve listing → v1 CID -> hex asset name.
+    println!("Fetching asset listing from assets-resolve...");
+    let listing = AssetListClient::new().fetch_all(policy_id).await?;
+    println!(
+        "  Assets in listing: {} (as of chunk {})",
+        listing.assets.len(),
+        listing.as_of_chunk
+    );
     let mut cid_to_asset: HashMap<String, String> = HashMap::new();
-    for a in &assets {
-        if let Some(url) = a.image_url.as_ref()
-            && let Some(cid) = extract_cid(url)
-                && let Some(v1) = to_cidv1(&cid) {
-                    cid_to_asset
-                        .entry(v1)
-                        .or_insert_with(|| a.encoded_name.clone());
-                }
+    for a in &listing.assets {
+        if let Some(cid) = extract_cid(&a.image)
+            && let Some(v1) = to_cidv1(&cid)
+        {
+            cid_to_asset.entry(v1).or_insert_with(|| a.name_hex.clone());
+        }
     }
     println!("  Assets with resolvable CIDs: {}", cid_to_asset.len());
 
-    // 3. For each failed CID: nftcdn fetch + CID verification.
+    // 3. For each target CID: nftcdn fetch + CID verification.
     let nftcdn = NftcdnClient::from_env()?;
-    let mut targets: Vec<&String> = failed.iter().collect();
+    let mut targets: Vec<&String> = candidates.iter().collect();
     if let Some(n) = limit {
         targets.truncate(n);
         println!("  Limited to first {}", targets.len());

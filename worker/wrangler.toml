@@ -12,6 +12,16 @@ enabled = true
 [build]
 command = "./build.sh"
 
+# The proof registry (viewer-proof): which proofs exist, and how to reproduce
+# them. Create it once with `wrangler d1 create viewer-registry` and replace the
+# id below with the one wrangler prints; then
+# `wrangler d1 migrations apply viewer-registry --remote`.
+[[d1_databases]]
+binding = "DB"
+database_name = "viewer-registry"
+database_id = "d013bd6d-fad5-451c-8d19-d3065db358e1"
+migrations_dir = "migrations"
+
 # Static assets configuration for frontend
 [assets]
 directory = "./dist/"
