@@ -1,0 +1,13 @@
+[package]
+name = "viewer-proof"
+description = "A published proof's registry record — the contract between the viewer worker and the compositor that publishes one"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

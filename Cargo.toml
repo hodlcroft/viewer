@@ -5,6 +5,7 @@ members = [
     "crates/bundle",
     "crates/binary",
     "crates/ingest",
+    "crates/proof",
     "crates/cli",
     "worker",
     "frontend",
@@ -22,6 +23,7 @@ viewer-format = { path = "crates/format" }
 viewer-bundle = { path = "crates/bundle" }
 viewer-binary = { path = "crates/binary" }
 viewer-ingest = { path = "crates/ingest" }
+viewer-proof = { path = "crates/proof" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -80,8 +82,8 @@ wallet-core = { git = "https://github.com/defrag-au/shared-crates", rev = "9e56e
 filebase_sdk = { package = "filebase", git = "https://github.com/defrag-au/shared-crates", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
 platform-types = { git = "https://github.com/defrag-au/shared-crates", package = "platform-types", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
 
-# shared-ui (for ui-core)
-ui-core = { git = "https://github.com/defrag-au/shared-ui", rev = "24cc859" }
+# shared-crates UI (formerly shared-ui)
+ui-core = { git = "https://github.com/defrag-au/shared-crates", rev = "9e56e3a3359392d68fc7b976c1d4e4a04001af53" }
 
 # Frontend-specific
 wasm-bindgen-futures = "0.4"

@@ -3,6 +3,9 @@
 //! This worker serves the frontend SPA and provides API endpoints.
 //! Collection data is fetched directly from R2 by the frontend via files.hodlcroft.com.
 
+mod auth;
+mod proofs;
+
 use serde::Serialize;
 use viewer_binary::{HEADER_SIZE, Header, MAGIC, TraitSchema};
 use worker::Fetch;
@@ -24,6 +27,9 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         // API routes
         .get("/api/health", |_req, _ctx| Response::ok("Viewer healthy"))
         .get_async("/api/debug/:slug", handle_debug)
+        // The proof registry: linked to a run's seed and config.
+        .post_async("/api/proofs", proofs::create)
+        .get_async("/api/proofs/:slug", proofs::get)
         // All other routes fall through to static assets (SPA)
         .run(req, env)
         .await

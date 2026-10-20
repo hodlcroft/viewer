@@ -1,0 +1,11 @@
+# Funplastic
+# Policy ID: f7f5a12b681be1a2c02054414a726fefadd47e24b0343cd287c0283d
+
+slug = "funplastic"
+name = "Funplastic"
+
+[traits]
+ignore = []
+
+[rarity]
+exclude = []
